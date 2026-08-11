@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ config.title }}{% endblock title %}</title>
+  <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
+  {% block head %}{% endblock head %}
+  <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+  <link id="giallo-light" rel="stylesheet" type="text/css" href="{{ get_url(path='giallo-light.css') }}" media="(prefers-color-scheme: light)">
+  <link id="giallo-dark" rel="stylesheet" type="text/css" href="{{ get_url(path='giallo-dark.css') }}" media="(prefers-color-scheme: dark)">
+  <link rel="alternate" type="application/atom+xml" title="{{ config.title }}" href="{{ get_url(path='atom.xml', lang=lang) }}">
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="{{ get_url(path='@/_index.md', lang=lang) }}">{{ config.title }}</a>
+      <a href="{{ get_url(path='atom.xml', lang=lang) }}">{{ trans(key='feed', lang=lang) }}</a>
+    </nav>
+  </header>
+  <main>
+    {% block content %}{% endblock content %}
+  </main>
+</body>
+</html>

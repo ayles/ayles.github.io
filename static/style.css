@@ -1,0 +1,92 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem;
+  font-family: system-ui, sans-serif;
+  line-height: 1.6;
+}
+
+nav {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+nav a:first-child {
+  margin-right: auto;
+  font-weight: 700;
+}
+
+.post-list {
+  list-style: none;
+  padding: 0;
+}
+
+.post-list li {
+  display: flex;
+  gap: 1rem;
+}
+
+time {
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.meta,
+.languages {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.meta {
+  flex-wrap: wrap;
+}
+
+.languages {
+  margin-left: auto;
+}
+
+.home-languages {
+  justify-content: flex-end;
+  margin-bottom: 1rem;
+}
+
+.languages a[aria-current="page"] {
+  font-weight: 700;
+  text-decoration: none;
+}
+
+pre {
+  padding: 1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Required by Zola's class-based syntax highlighting, per
+   https://www.getzola.org/documentation/content/syntax-highlighting/ */
+.giallo-l {
+  display: inline-block;
+  min-height: 1lh;
+  width: 100%;
+}
+
+.giallo-ln {
+  display: inline-block;
+  user-select: none;
+  margin-right: 0.4em;
+  padding: 0.4em;
+  min-width: 3ch;
+  text-align: right;
+  opacity: 0.8;
+}

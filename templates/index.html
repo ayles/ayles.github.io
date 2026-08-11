@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block head %}
+  <link rel="canonical" href="{{ section.permalink }}">
+  {% for translation in section.translations %}
+  <link rel="alternate" hreflang="{% if translation.lang %}{{ translation.lang }}{% else %}{{ config.default_language }}{% endif %}" href="{{ translation.permalink }}">
+  {% if translation.lang == config.default_language %}
+  <link rel="alternate" hreflang="x-default" href="{{ translation.permalink }}">
+  {% endif %}
+  {% endfor %}
+{% endblock head %}
+
+{% block content %}
+{% if section.translations | length > 1 %}
+<nav class="languages home-languages" aria-label="Language">
+  {% for translation in section.translations | sort(attribute="lang") %}
+  <a href="{{ translation.permalink }}"{% if translation.permalink == section.permalink %} aria-current="page"{% endif %}>{% if translation.lang == "ru" %}RU{% else %}EN{% endif %}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+{{ section.content | safe }}
+<ul class="post-list">
+  {% for page in section.pages %}
+  <li>
+    <time datetime="{{ page.date }}">{{ page.date | date(format="%Y-%m-%d") }}</time>
+    <a href="{{ page.permalink }}">{{ page.title }}</a>
+  </li>
+  {% endfor %}
+</ul>
+{% endblock content %}
