@@ -757,17 +757,17 @@ there is no honest extra column that would separate those parts.
 There is a less playful workload too. The ready-to-run
 [Lua-XDP example](https://github.com/ayles/bpf-capsule/tree/e6ac4118411d5c5100186f3878e11f1e483b3f31/examples/lua-xdp)
 attaches Lua 5.4 to a real XDP hook: a script supplied at startup can inspect
-arbitrary packets and emit results through a ring buffer. On a hot sequence of
-identical packets, such parsing takes about 48–51 µs—around twenty thousand
-packets per second on one core. A custom script can be started with:
+arbitrary packets and emit results through a ring buffer. On the particular
+ARM64 machine I tested, a hot sequence of identical packets took tens of
+microseconds per packet—roughly twenty thousand packets per second on one core.
+A custom script can be started with:
 
 ```console
 $ sudo nix run .#lua-xdp -- examples/lua-xdp/packet_observer.lua eth0
 ```
 
-Both the DOOM ratio and Lua-XDP throughput were measured on one particular
-ARM64 processor. They show the order of magnitude, not a promise of identical
-numbers on other hardware.
+The DOOM ratio is hardware-specific as well. Both numbers show the order of
+magnitude, not a promise of identical results on another processor.
 
 ## LLVM and the verifier still do not agree
 
