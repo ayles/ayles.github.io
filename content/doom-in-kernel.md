@@ -23,10 +23,17 @@ and keyboard input and gets back a pointer to the finished framebuffer.
 The project is called [BPF Capsule](https://github.com/ayles/bpf-capsule). It
 is a compiler and runtime for large C programs inside ordinary BPF, with no
 kernel patches and no separate virtual machine in userspace.
+The oldest supported target is Linux 5.15; I have loaded and run the programs
+on both x86-64 and arm64.
 
-While working on [Perforator](https://github.com/yandex/perforator), I got to
-know eBPF closely—and accumulated enough frustration with its current stack to
-go this far.
+On Linux 6.9 or newer, it can be tried immediately after cloning the repository
+(the WAD is naturally not included):
+
+```console
+$ git clone https://github.com/ayles/bpf-capsule.git
+$ cd bpf-capsule
+$ sudo nix run .#doom -- /path/to/doom1.wad tty
+```
 
 The trick is the shape of the program presented to the verifier. First I got
 DOOM to compile to BPF and run without a verifier at all. Then I cut out
@@ -38,7 +45,7 @@ stack grew out of it.
 These approaches broke one after another, and every failure suggested what had
 to be built next.
 
-<video controls preload="none" playsinline width="960" height="560"
+<video controls preload="none" playsinline loop width="960" height="560"
        poster="/doom-in-kernel/doom-capsule.webp"
        aria-label="DOOM executing in the kernel; the panel on the right shows live samples from BPF Capsule JIT functions">
   <source src="/doom-in-kernel/doom-capsule.mp4" type="video/mp4">
@@ -58,6 +65,10 @@ load.
 
 In practice, “write C” means writing in two rather different languages at
 once. LLVM understands one. The Linux verifier understands the other.
+
+I became intimately familiar with that boundary while working on
+[Perforator](https://github.com/yandex/perforator). That is where I accumulated
+enough frustration with the current BPF stack to go this far.
 
 Before loading a program, the verifier symbolically executes it. For every
 register it tracks not only a value or range, but a meaning: an ordinary
@@ -92,8 +103,8 @@ that route, the verifier loses the proof.
 ### A current LLVM example
 
 It is not enough to write a valid bounds check in C: the kernel sees the code
-after optimization. This fragment comes from the current Lua-XDP example in
-Capsule:
+after optimization. Here is a real fragment of
+[packet-processing BPF code](https://github.com/ayles/bpf-capsule/blob/e6ac4118411d5c5100186f3878e11f1e483b3f31/examples/lua-xdp/lua_xdp_runtime.c):
 
 ```c
 size_t at = offset + index;
@@ -124,10 +135,10 @@ Before involving the kernel, there is an intermediate step: compile DOOM to
 BPF and run the object in a userspace virtual machine. With no verifier, code
 generation bugs can be separated from failures to prove safety.
 
-I used [PureDOOM](https://github.com/Daivuk/PureDOOM) as the base. Exactly one
-runtime computation involving `double` survives into the executable code. It
-would be easy to rewrite, but I deliberately left it alone: Capsule lowers it
-to soft-float, and the game still works.
+I based the experiment on [PureDOOM](https://github.com/Daivuk/PureDOOM), a port
+that packages the whole engine into one C header and exposes a short embedding
+interface. It is convenient for an experiment like this while leaving DOOM
+itself almost entirely ordinary C.
 
 Even without the verifier, arbitrary C does not become BPF by itself. The
 classic ABI has nowhere to put a sixth argument, and BPF has neither
@@ -304,10 +315,9 @@ This also revealed a funny paradox: sometimes the verifier is faster when it
 knows less. An exact initial counter value makes it walk each iteration as a
 distinct state. An unknown value lets similar states merge.
 
-The counters therefore had to be “laundered” too, this time through a real
-`volatile` store and reload. An empty `asm("" : "+r"(x))` did not help here:
-unlike the Lua-XDP example, the kernel itself had to forget the exact value,
-and the empty assembly emits no BPF instruction.
+Before entering the canonical loop, the counters were stored in `volatile`
+memory and loaded back. The verifier then saw a range rather than an exact
+constant, allowing states from different iterations to merge.
 
 This carried most loops through the verifier. But a compiler can spend forever
 learning every new LLVM IR shape. I needed a way to execute arbitrary control
@@ -429,15 +439,16 @@ fp ---> | result area                    |  written by the callee
         | argument 0                     |  one common stride for arguments
         | argument 1                     |
         | local values                   |
-        +--------------------------------+
+sp ---> +--------------------------------+  allocated-stack frontier
                     lower addresses
 ```
 
-A call changes only `fp`, the stack top, and the next region number. A return
-performs the three operations in reverse. A sixth argument, deep call chain,
-or recursion therefore consumes no additional registers or frames in the real
-BPF ABI: as far as the kernel is concerned, each region still returns
-normally.
+The stack grows toward lower addresses: `fp` marks the current frame boundary,
+while `sp` marks the lower edge of allocated space. A call changes only `fp`,
+`sp`, and the next region number. A return performs the three operations in
+reverse. A sixth argument, deep call chain, or recursion therefore consumes no
+additional registers or frames in the real BPF ABI: as far as the kernel is
+concerned, each region still returns normally.
 
 Recursion does not turn into recursive calls between BPF functions. Every
 source call merely pushes another software frame. A function pointer becomes a
@@ -584,6 +595,21 @@ check its bounds, read it directly, and follow pointers stored in shared
 memory. No handles, object serialization, or copying through a special map API
 are required.
 
+### The heap and non-suspending operations
+
+The shared window provides an address space, but `malloc()` still needs an
+implementation. Capsule uses TLSF: its metadata and blocks live in the shared
+heap, while `malloc()` and `free()` execute inside BPF with the rest of the
+program. Fibers share one heap, but each keeps its own software stack.
+
+While TLSF holds a lock and edits free lists, the computation must not return to
+the dispatcher. `CAPSULE_NOSUSPEND` marks allocator functions: the compiler
+must prove that each function and everything it calls finish without
+suspension. An unprovable loop or suspendable call becomes a build error. A
+short TLSF operation therefore stays in one ordinary BPF call with no
+dispatcher boundary: it cannot suspend between acquiring and releasing its
+lock. If the lock is busy, ordinary `malloc()` retries outside that operation.
+
 ### Where Capsule ends
 
 Not every pointer can or should be transformed. Globals explicitly placed in a
@@ -643,15 +669,6 @@ cannot be stored in a software frame or carried into the next region. The
 compiler can reinsert the root `ctx`, but `data` and `data_end` must be loaded
 and checked again. Attempting to preserve a packet pointer stops the build.
 
-TLSF runs on top of the shared window: fibers share the heap and each owns a
-software-stack slice. The allocator needs one more kind of boundary. While it
-holds a lock and edits free lists, the computation must not return to the
-dispatcher. `CAPSULE_NOSUSPEND` marks such a function: the compiler must prove
-that it and everything it calls finish without suspension. An unprovable loop
-or suspendable call becomes a build error. A short TLSF operation can thus
-acquire and release its lock atomically, while ordinary `malloc()` retries
-outside the region if the lock is busy.
-
 ## What else the compiler has to do
 
 Regions solve control flow, but do not add the missing pieces of the BPF ABI.
@@ -666,6 +683,10 @@ The compiler also:
 - moves excess temporary values out of the BPF stack after register allocation,
   while leaving pointers whose types the verifier must see on that stack.
 
+Exactly one computation involving `double` survives into PureDOOM's executable
+code. It would be easy to rewrite, but I left it alone: this path goes through
+the same soft-float lowering as any other program.
+
 LLVM itself remains unpatched. `bpf-capsule-cc` emits bitcode;
 `bpf-capsule-ld` links the whole program with the runtime, runs Capsule's
 passes, and only then gives the result to LLVM's ordinary BPF backend for ELF
@@ -673,13 +694,16 @@ and BTF emission.
 
 ## What remains of the DOOM integration
 
-After all this work, the integration is almost boring. PureDOOM asks the host
-to implement a small platform interface: memory allocation, WAD reads,
-deterministic time, input, and a final message before exit.
+After all this work, the integration is almost boring. PureDOOM is designed to
+be embedded: the surrounding program supplies a small set of C functions for
+memory, WAD reads, time, input, and exit. In Capsule these are not calls into
+userspace: `malloc()`/`free()`, WAD reads, and the engine itself are compiled
+into one BPF object and execute in the kernel.
 
-At load time, userspace reserves exactly enough Capsule memory for the WAD,
-copies the file once, and gives the engine an ordinary `unsigned char *` and
-size. The engine reads the WAD in place.
+Userspace participates only at the outer boundary. At load time it reserves
+exactly enough Capsule memory for the WAD, copies the file once, and gives the
+engine an ordinary `unsigned char *` and size. From then on, BPF code reads the
+WAD in place.
 
 Initialization is one BPF entry point. Each game tick, including complete
 rendering, is another. After rendering, BPF publishes a pointer to the
@@ -689,14 +713,6 @@ range and reads the pixels directly for terminal or PPM output.
 A deterministic test supplies one input sequence, hashes the frames, and
 compares them across kernel profiles. It catches both a wrong image and an
 unexpected `PENDING` during frame processing.
-
-## How to show that DOOM really runs in the kernel
-
-A terminal screenshot proves nothing. `bpftool` or `bpftop`, however, show
-kernel `run_time_ns` and `run_cnt` increasing for `doom_frame`;
-`strace -e bpf` sees one `BPF_PROG_TEST_RUN` per frame; and `perf top` shows
-JIT symbols named `bpf_prog_*`. Together, these distinguish real in-kernel
-execution from attractive userspace output.
 
 ## What it costs
 
@@ -731,22 +747,27 @@ question: how much is gained by dispatching large pieces of JIT code instead
 of individual instructions?
 
 I measured real programs separately. With one WAD and an identical sequence of
-100 frames, the previous revision spent about **1.96 ms** per frame and the
-current one **0.97 ms**, roughly twice as fast. Every frame hash matched. There
-is no honest “direct BPF” or “VM” measurement for this DOOM, so filling the
-rest of the table by extrapolation would be meaningless.
+100 frames, DOOM inside Capsule was roughly **four to five times slower** than
+a native build of the same PureDOOM. That ratio is not only region dispatch:
+even direct eBPF through the kernel JIT trails native code in the common
+synthetic test above. Memory routing, the software stack, and the other Capsule
+transformations add their costs on top. DOOM cannot be built as direct BPF, so
+there is no honest extra column that would separate those parts.
 
-There is a less playful workload too. Lua-XDP attaches to a real XDP hook,
-parses Ethernet/IP/TCP/UDP in an ordinary Lua script, and emits events through
-a ring buffer. On a hot sequence of identical packets, the old revision took
-roughly 90–94 µs per packet and the new one 48–51 µs: around twenty thousand
-parses per second on one core. It is the same compiler, memory model, and
-region machinery, but a very different call pattern; its nearly twofold gain
-is coincidental.
+There is a less playful workload too. The ready-to-run
+[Lua-XDP example](https://github.com/ayles/bpf-capsule/tree/e6ac4118411d5c5100186f3878e11f1e483b3f31/examples/lua-xdp)
+attaches Lua 5.4 to a real XDP hook: a script supplied at startup can inspect
+arbitrary packets and emit results through a ring buffer. On a hot sequence of
+identical packets, such parsing takes about 48–51 µs—around twenty thousand
+packets per second on one core. A custom script can be started with:
 
-Both A/B comparisons interleaved old and new revisions on the same machine.
-The numbers describe those particular versions and hardware, not a promise of
-the same ratio on every processor.
+```console
+$ sudo nix run .#lua-xdp -- examples/lua-xdp/packet_observer.lua eth0
+```
+
+Both the DOOM ratio and Lua-XDP throughput were measured on one particular
+ARM64 processor. They show the order of magnitude, not a promise of identical
+numbers on other hardware.
 
 ## LLVM and the verifier still do not agree
 
