@@ -1,6 +1,6 @@
 +++
 title = "DOOM in the kernel, or fibers in eBPF"
-date = 2026-08-31
+date = 2026-09-01
 description = "How a hand-ported DOOM, verifier tricks, and a slow virtual machine led to a compiler built around regions and fibers."
 draft = false
 +++
@@ -104,7 +104,7 @@ that route, the verifier loses the proof.
 
 It is not enough to write a valid bounds check in C: the kernel sees the code
 after optimization. Here is a real fragment of
-[packet-processing BPF code](https://github.com/ayles/bpf-capsule/blob/da9129f95f56aa8dba40c55c13bc9d6bcc65633c/examples/lua-xdp/lua_xdp_runtime.c):
+[packet-processing BPF code](https://github.com/ayles/bpf-capsule/blob/d8a8f5f647aa1ccbea62eba57f1d1ff67fd09ecc/examples/lua-xdp/lua_xdp_runtime.c):
 
 ```c
 size_t at = offset + index;
@@ -452,9 +452,8 @@ field is read at a constant offset from `fp`, without first loading a pointer
 to a separate copy. Variadic arguments follow the fixed prefix, and `va_list`
 is simply a cursor through that tail. A return performs the three state
 changes in reverse. A sixth argument, deep call chain, or recursion therefore
-consumes no additional registers or frames in the real BPF ABI: as far as the
-kernel is concerned,
-each region still returns normally.
+consumes no additional registers or frames in the real BPF ABI: as far as
+the kernel is concerned, each region still returns normally.
 
 Recursion does not turn into recursive calls between BPF functions. Every
 source call merely pushes another software frame. A function pointer becomes a
@@ -761,7 +760,7 @@ transformations add their costs on top. DOOM cannot be built as direct BPF, so
 there is no honest extra column that would separate those parts.
 
 There is a less playful workload too. The ready-to-run
-[Lua-XDP example](https://github.com/ayles/bpf-capsule/tree/da9129f95f56aa8dba40c55c13bc9d6bcc65633c/examples/lua-xdp)
+[Lua-XDP example](https://github.com/ayles/bpf-capsule/tree/d8a8f5f647aa1ccbea62eba57f1d1ff67fd09ecc/examples/lua-xdp)
 attaches Lua 5.5.1 to a real XDP hook: a script supplied at startup can inspect
 arbitrary packets and emit results through a ring buffer. On the particular
 ARM64 machine I tested, a hot sequence of identical packets took tens of
