@@ -447,10 +447,13 @@ The stack grows toward lower addresses: `fp` marks the current frame boundary,
 while `sp` marks the lower edge of allocated space. A call changes only `fp`,
 `sp`, and the next region number. Each call site already knows how LLVM lowered
 its arguments, so it allocates exactly the outgoing area that call needs.
-Variadic arguments follow the fixed prefix, and `va_list` is simply a cursor
-through that tail. A return performs the three state changes in reverse. A
-sixth argument, deep call chain, or recursion therefore consumes no additional
-registers or frames in the real BPF ABI: as far as the kernel is concerned,
+Values, including structures passed by value, live directly in that area: a
+field is read at a constant offset from `fp`, without first loading a pointer
+to a separate copy. Variadic arguments follow the fixed prefix, and `va_list`
+is simply a cursor through that tail. A return performs the three state
+changes in reverse. A sixth argument, deep call chain, or recursion therefore
+consumes no additional registers or frames in the real BPF ABI: as far as the
+kernel is concerned,
 each region still returns normally.
 
 Recursion does not turn into recursive calls between BPF functions. Every
