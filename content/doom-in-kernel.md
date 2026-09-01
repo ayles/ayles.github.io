@@ -104,7 +104,7 @@ that route, the verifier loses the proof.
 
 It is not enough to write a valid bounds check in C: the kernel sees the code
 after optimization. Here is a real fragment of
-[packet-processing BPF code](https://github.com/ayles/bpf-capsule/blob/e6ac4118411d5c5100186f3878e11f1e483b3f31/examples/lua-xdp/lua_xdp_runtime.c):
+[packet-processing BPF code](https://github.com/ayles/bpf-capsule/blob/da9129f95f56aa8dba40c55c13bc9d6bcc65633c/examples/lua-xdp/lua_xdp_runtime.c):
 
 ```c
 size_t at = offset + index;
@@ -423,32 +423,35 @@ memory.
 
 The caller places everything that must cross the boundary there, creates a
 callee frame, records the callee's first region, and returns to the dispatcher.
-Later, the callee writes its result into the caller's frame, restores the
-continuation number, and returns through the dispatcher too.
+Later, the callee writes its result into the caller-owned part of that frame,
+restores the continuation number, and returns through the dispatcher too.
 
 This has a small ABI of its own. A frame looks roughly like this:
 
 ```text
                     higher addresses
         +--------------------------------+
-fp ---> | result area                    |  written by the callee
+        | variadic arguments             |  layout known at the call site
+        | fixed arguments                |
+        | optional result area           |  written by the callee
         +--------------------------------+
- fp-8   | region to run after return     |
- fp-16  | caller's fp                    |
+ fp+8   | region to run after return     |
+fp ---> | caller's fp                    |
         +--------------------------------+
-        | argument 0                     |  one common stride for arguments
-        | argument 1                     |
-        | local values                   |
+        | callee locals and saved values |
 sp ---> +--------------------------------+  allocated-stack frontier
                     lower addresses
 ```
 
 The stack grows toward lower addresses: `fp` marks the current frame boundary,
 while `sp` marks the lower edge of allocated space. A call changes only `fp`,
-`sp`, and the next region number. A return performs the three operations in
-reverse. A sixth argument, deep call chain, or recursion therefore consumes no
-additional registers or frames in the real BPF ABI: as far as the kernel is
-concerned, each region still returns normally.
+`sp`, and the next region number. Each call site already knows how LLVM lowered
+its arguments, so it allocates exactly the outgoing area that call needs.
+Variadic arguments follow the fixed prefix, and `va_list` is simply a cursor
+through that tail. A return performs the three state changes in reverse. A
+sixth argument, deep call chain, or recursion therefore consumes no additional
+registers or frames in the real BPF ABI: as far as the kernel is concerned,
+each region still returns normally.
 
 Recursion does not turn into recursive calls between BPF functions. Every
 source call merely pushes another software frame. A function pointer becomes a
@@ -755,8 +758,8 @@ transformations add their costs on top. DOOM cannot be built as direct BPF, so
 there is no honest extra column that would separate those parts.
 
 There is a less playful workload too. The ready-to-run
-[Lua-XDP example](https://github.com/ayles/bpf-capsule/tree/e6ac4118411d5c5100186f3878e11f1e483b3f31/examples/lua-xdp)
-attaches Lua 5.4 to a real XDP hook: a script supplied at startup can inspect
+[Lua-XDP example](https://github.com/ayles/bpf-capsule/tree/da9129f95f56aa8dba40c55c13bc9d6bcc65633c/examples/lua-xdp)
+attaches Lua 5.5.1 to a real XDP hook: a script supplied at startup can inspect
 arbitrary packets and emit results through a ring buffer. On the particular
 ARM64 machine I tested, a hot sequence of identical packets took tens of
 microseconds per packet—roughly twenty thousand packets per second on one core.
@@ -819,6 +822,12 @@ window replaced the attempt to preserve the biography of every C pointer.
 
 DOOM was the first large test of this design. Lua, QuickJS, SQLite, zlib,
 wasm3, llama2.c, and `no_std` Rust now run on it as well.
+
+This is not a list of things that once happened to run by hand. CI loads the
+tests and examples into Linux 5.15 and a current kernel. For llama2.c it runs
+the real stories260K checkpoint in FP32 and Q8, then requires the tokens to
+match a native run of the same code; generation itself uses an explicit finite
+continuation budget.
 
 LLM tools accelerated the work considerably; alongside my day job, I probably
 would not have brought the project this far without them.
