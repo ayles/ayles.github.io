@@ -1,6 +1,6 @@
 +++
 title = "DOOM in the kernel, or fibers in eBPF"
-date = 2026-09-01
+date = 2026-09-09
 description = "How a hand-ported DOOM, verifier tricks, and a slow virtual machine led to a compiler built around regions and fibers."
 draft = false
 +++

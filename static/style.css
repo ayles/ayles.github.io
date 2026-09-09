@@ -36,7 +36,13 @@ time {
   font-variant-numeric: tabular-nums;
 }
 
-.meta,
+.meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 pre {
   padding: 1rem;
   border-radius: 6px;
