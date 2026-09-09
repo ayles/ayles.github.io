@@ -558,9 +558,16 @@ model built on lies in BTF was not viable. The current design starts with one
 4-GiB-aligned virtual window containing globals, the heap, and software stacks.
 
 ```text
-        one 4-GiB virtual window, mapped from both sides
-BPF code --> [ globals | heap | fiber stacks ] <-- userspace process
-        the same pages at the same addresses
+                 the in-kernel BPF code
+   v v v v v v v v v v v v v v v v v v v v v v v v v
+   +-----------------+-----------+-----------------+
+   |     globals     |    heap   |   fiber stacks  |
+   +-----------------+-----------+-----------------+
+   ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^ ^
+                 the userspace process
+
+   window base, 4-GiB aligned                + 4 GiB
+   one range of addresses, the same on both sides
 ```
 
 A Capsule pointer is an ordinary `window_base + displacement` address. It has
