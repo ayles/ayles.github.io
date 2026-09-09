@@ -8,22 +8,11 @@ draft = false
 DOOM is not supposed to run inside eBPF. Linux should reject a program like
 that before executing its first instruction.
 
-eBPF is a way to run user-supplied code inside the Linux kernel without kernel
-modules. A program is compiled to the bytecode of a small register machine,
-loaded with the `bpf(2)` system call, and attached by the kernel to one of its
-own points: the arrival of a network packet (XDP), the entry of a kernel
-function, a system call. From then on the kernel runs it through its own JIT on
-every such event, as ordinary machine code. The price of that freedom is a
-static check before loading, and anything the checker cannot prove is
-forbidden.
-
-That checker is the verifier, and it is strict. BPF has a tiny stack, five
-argument registers, and limited call depth. Recursion is forbidden. A loop must
-be finite not merely because the programmer says so, but in terms the verifier
-can prove. You cannot simply store a pointer in memory, load it later, and
-dereference it: the kernel must remember where it came from and what it is
-allowed to address. It is that check, rather than the bytecode itself, that
-makes DOOM inside eBPF look impossible at first glance.
+BPF has a tiny stack, five argument registers, and limited call depth.
+Recursion is forbidden. A loop must be finite not merely because the programmer
+says so, but in terms the verifier can prove. You cannot simply store a pointer
+in memory, load it later, and dereference it: the kernel must remember where it
+came from and what it is allowed to address.
 
 And yet an unmodified Linux kernel accepts my BPF object, checks it with the
 stock verifier, and runs it through the stock JIT. DOOM initialization, game
@@ -31,11 +20,21 @@ logic, and rendering all execute in the kernel. One game tick, including the
 complete frame, finishes in a single BPF invocation. Userspace supplies the WAD
 and keyboard input and gets back a pointer to the finished framebuffer.
 
+A word on the machine all of this happens in. eBPF runs user-supplied code
+inside the Linux kernel without kernel modules: a program is compiled to the
+bytecode of a small register machine, loaded with the `bpf(2)` system call, and
+attached to one of the kernel's own points — the arrival of a network packet
+(XDP), the entry of a kernel function, a system call. From then on the kernel
+runs it through its own JIT on every such event, as ordinary machine code. The
+price of that freedom is the static check before loading that those constraints
+come from: anything the verifier cannot prove is forbidden. That check, rather
+than the bytecode, is what makes DOOM inside eBPF look impossible.
+
 The project is called [BPF Capsule](https://github.com/ayles/bpf-capsule). It
 is a compiler and runtime for large C programs inside ordinary BPF, with no
-kernel patches and no separate virtual machine in userspace.
-The oldest supported target is Linux 5.15. I have loaded and run the programs
-on both x86-64 and arm64.
+kernel patches and no separate virtual machine in userspace. The oldest
+supported target is Linux 5.15. I have loaded and run the programs on both
+x86-64 and arm64.
 
 Nobody needs games in the kernel, of course. But complex application logic is
 useful there: parsing packets, for example, or keeping statistics about them.
@@ -88,16 +87,16 @@ On paper, eBPF is a small register architecture with an LLVM backend. It sounds
 simple: write C, run `clang -target bpf`, and get an object the kernel can
 load.
 
-In practice, “write C” means writing in two rather different languages at
-once. LLVM understands one. The Linux verifier understands the other.
+In practice, “write C” means writing in two rather different languages at once.
+LLVM understands one. The Linux verifier understands the other.
 
 I became intimately familiar with that boundary while working on
 [Perforator](https://github.com/yandex/perforator). That is where I accumulated
 enough frustration with the current BPF stack to go this far.
 
 Before loading a program, the verifier symbolically executes it. For every
-register it tracks not only a value or range, but a meaning: an ordinary
-number (`SCALAR_VALUE`), a pointer to the stack, packet data, a map value, or a
+register it tracks not only a value or range, but a meaning: an ordinary number
+(`SCALAR_VALUE`), a pointer to the stack, packet data, a map value, or a
 `bpf_arena`. It explores branches, merges states, and proves two things: every
 memory access is allowed, and every execution path eventually terminates.
 
@@ -115,11 +114,11 @@ budget. A finite loop is legal in itself; the problem starts when the kernel
 cannot prove its bound or has to enumerate too many possibilities.
 
 Memory is more entertaining still. To the CPU, a pointer is ultimately just a
-number. To the verifier, it is a number with a biography. It may know that
-`r10 - 8` points into a valid BPF stack slot, or that `data + n` remains within
-a packet after a check against `data_end`. Store that pointer as ordinary 64
-bits and load it back, and the CPU gets the same address while the verifier
-gets a number with no right to be dereferenced.
+number. To the verifier, it is a number with a biography. It may know that `r10
+- 8` points into a valid BPF stack slot, or that `data + n` remains within a
+packet after a check against `data_end`. Store that pointer as ordinary 64 bits
+and load it back, and the CPU gets the same address while the verifier gets a
+number with no right to be dereferenced.
 
 Normal C programs constantly put pointers in structures, pass those structures
 through several functions, and load the pointers much later. Somewhere along
@@ -156,8 +155,8 @@ in a recognizable shape.
 
 ## First, produce any BPF at all
 
-Before involving the kernel, there is an intermediate step: compile DOOM to
-BPF and run the object in a userspace virtual machine. With no verifier, code
+Before involving the kernel, there is an intermediate step: compile DOOM to BPF
+and run the object in a userspace virtual machine. With no verifier, code
 generation bugs can be separated from failures to prove safety.
 
 I based the experiment on [PureDOOM](https://github.com/Daivuk/PureDOOM), a
@@ -240,8 +239,8 @@ real BPF stack does not help; DOOM's arbitrary heap will not fit in 512 bytes.
 Before an access, that number has to be tied again to an object known by the
 kernel. It sounds as if subtracting the start of `.data` or `.bss` should be
 enough. But to the verifier the first value is a scalar and the second is a
-`PTR_TO_MAP_VALUE` obtained from an ELF relocation. The kernel forbids
-`scalar - pointer`.
+`PTR_TO_MAP_VALUE` obtained from an ELF relocation. The kernel forbids `scalar
+- pointer`.
 
 Reversing the subtraction looks like a ready-made escape hatch. Take a real
 pointer to the right boundary of a section: on the CPU, `end_ptr - x` would
@@ -286,18 +285,18 @@ void *bpf_ptr_to_scalar(void *ptr)
 }
 ```
 
-A BTF type table shipped alongside the program. It deliberately told the
-kernel that this function took no arguments and returned `u64`, even though the
-machine code used `r1`. The store into the map consequently looked like a
-store of an ordinary number, and the caller received a scalar as well. The
-comment was honest: `Fool the verifier into thinking that there are no args`.
+A BTF type table shipped alongside the program. It deliberately told the kernel
+that this function took no arguments and returned `u64`, even though the
+machine code used `r1`. The store into the map consequently looked like a store
+of an ordinary number, and the caller received a scalar as well. The comment
+was honest: `Fool the verifier into thinking that there are no args`.
 
 The section base needed another ugly trick. The pass inserted one synthetic
 global at the beginning of both `.data` and `.bss`; a reference to it became
 the real base of the corresponding map after load. At first, section size was
 computed as the sum of LLVM globals, but the final layout and alignment do not
-exist until ELF emission. In the last surviving version of this experiment,
-the computed result was simply overwritten by two hard-coded constants.
+exist until ELF emission. In the last surviving version of this experiment, the
+computed result was simply overwritten by two hard-coded constants.
 
 Comparisons then bounded the scalar `offset`, and adding it to the untouched
 base produced a `PTR_TO_MAP_VALUE` again. Every uncertain read or write grew a
@@ -321,10 +320,10 @@ its million-instruction budget there instead.
 
 ## Hack two: one counter to rule them all
 
-The first loop pass wrapped every loop in
-`bpf_iter_num_new`/`next`/`destroy` with a large emergency bound. It then grew
-more aggressive: every counter and pointer advanced by the loop was expressed
-through a single iteration number, `n`.
+The first loop pass wrapped every loop in `bpf_iter_num_new`/`next`/`destroy`
+with a large emergency bound. It then grew more aggressive: every counter and
+pointer advanced by the loop was expressed through a single iteration number,
+`n`.
 
 If the source loop advanced `i`, `j`, and `p` together, the transformed loop
 reconstructed them:
@@ -362,9 +361,9 @@ Termination is obvious.
 
 I tested this literally: first an interpreter for real eBPF inside eBPF, then
 an RV64IM interpreter and loader for ordinary RISC-V ELF files. A checksum and
-zlib produced correct results, but an archived single-core zlib measurement
-was roughly **60×** slower than native code. Most of the time, the kernel was
-not running zlib at all. It was running `switch (opcode)`: the virtual machine
+zlib produced correct results, but an archived single-core zlib measurement was
+roughly **60×** slower than native code. Most of the time, the kernel was not
+running zlib at all. It was running `switch (opcode)`: the virtual machine
 returned to the dispatcher after every guest instruction.
 
 The unit of interpretation had to be much larger than one instruction. The
@@ -377,13 +376,13 @@ contains a whole piece of already compiled code. Ordinary BPF runs inside that
 piece, then saves its state and returns to a small dispatcher. I call such a
 piece a **region**.
 
-A region is bounded: it ends at a complex
-call, a return, a `yield`, an inconvenient loop backedge, or wherever the
-compiler decides to cut an oversized graph. It runs in full, saves live
-values, and returns to the dispatcher. The source program may suspend only at
-that boundary; in this sense, a region is atomic. The dispatcher invokes the
-next region. To the verifier this is an ordinary caller–callee boundary, not
-another part of DOOM's enormous control-flow graph.
+A region is bounded: it ends at a complex call, a return, a `yield`, an
+inconvenient loop backedge, or wherever the compiler decides to cut an
+oversized graph. It runs in full, saves live values, and returns to the
+dispatcher. The source program may suspend only at that boundary; in this
+sense, a region is atomic. The dispatcher invokes the next region. To the
+verifier this is an ordinary caller–callee boundary, not another part of DOOM's
+enormous control-flow graph.
 
 The verifier therefore never analyzes the whole path through the source
 program. It sees a small region and a bounded dispatcher. A normal call is
@@ -451,10 +450,9 @@ happens at the boundary of a large piece of work rather than after every `add`.
 
 ## Where the fibers and second stack came from
 
-Once a function call is split by a region boundary, the ordinary BPF call
-stack is no longer enough. Arguments, locals, and the return address need
-somewhere to survive the transition. That became a software stack in Capsule
-memory.
+Once a function call is split by a region boundary, the ordinary BPF call stack
+is no longer enough. Arguments, locals, and the return address need somewhere
+to survive the transition. That became a software stack in Capsule memory.
 
 The caller places everything that must cross the boundary there, creates a
 callee frame, records the callee's first region, and returns to the dispatcher.
@@ -487,15 +485,15 @@ its arguments, so it allocates exactly the outgoing area that call needs.
 Values, including structures passed by value, live directly in that area: a
 field is read at a constant offset from `fp`, without first loading a pointer
 to a separate copy. Variadic arguments follow the fixed prefix, and `va_list`
-is simply a cursor through that tail. A return performs the three state
-changes in reverse. A sixth argument, deep call chain, or recursion therefore
-consumes no additional registers or frames in the real BPF ABI: as far as
-the kernel is concerned, each region still returns normally.
+is simply a cursor through that tail. A return performs the three state changes
+in reverse. A sixth argument, deep call chain, or recursion therefore consumes
+no additional registers or frames in the real BPF ABI: as far as the kernel is
+concerned, each region still returns normally.
 
 Recursion does not turn into recursive calls between BPF functions. Every
 source call merely pushes another software frame. A function pointer becomes an
-ordinary 64-bit value in the code range just above the data window: `window +
-4 GiB + the number of its entry region`. An indirect call recovers the region
+ordinary 64-bit value in the code range just above the data window: `window + 4
+GiB + the number of its entry region`. An indirect call recovers the region
 number by truncating that value to its low word, and the dispatcher enters
 whatever region that number names; a number naming no region ends the
 computation with an invalid-dispatch error.
@@ -523,9 +521,9 @@ cannot accidentally resume a different task that has reused the same slot.
 
 Loops no longer have to be normalized into one exact IR pattern after
 optimization. A small loop with a proven bound remains an ordinary BPF loop. A
-hot dynamic loop may execute several iterations inside one region. In the
-worst case, a backedge saves the next iteration's live values and returns to
-the dispatcher.
+hot dynamic loop may execute several iterations inside one region. In the worst
+case, a backedge saves the next iteration's live values and returns to the
+dispatcher.
 
 ### Why the verifier accepts this dispatcher
 
@@ -590,13 +588,13 @@ framebuffer themselves live in the shared window and do not need to be copied
 through the control map.
 
 On Linux 6.9 and newer (6.10 on arm64, where JIT support for the arena landed
-later), the window is backed by `bpf_arena`: libbpf loads
-globals with non-zero initial contents from ELF, and Capsule initialization
-allocates zero pages for the remaining globals, heap, and stacks. A full
-pointer can be stored, compared, and returned as an ordinary number—a scalar
-to the verifier. Before dereferencing it, the compiler runs it through the
-special BPF `addr_space_cast` instruction. The verifier marks the temporary
-result as `PTR_TO_ARENA`, and only that result touches memory:
+later), the window is backed by `bpf_arena`: libbpf loads globals with non-zero
+initial contents from ELF, and Capsule initialization allocates zero pages for
+the remaining globals, heap, and stacks. A full pointer can be stored,
+compared, and returned as an ordinary number—a scalar to the verifier. Before
+dereferencing it, the compiler runs it through the special BPF
+`addr_space_cast` instruction. The verifier marks the temporary result as
+`PTR_TO_ARENA`, and only that result touches memory:
 
 ```text
 full window + offset pointer
@@ -742,14 +740,13 @@ Exactly one computation involving `double` survives into PureDOOM's executable
 code. It would be easy to rewrite, but I left it alone: this path goes through
 the same soft-float lowering as any other program.
 
-LLVM itself remains unpatched. `bpf-capsule-cc` emits bitcode;
-`bpf-capsule-ld` links the whole program with the runtime, runs Capsule's
-passes, and only then gives the result to LLVM's ordinary BPF backend for ELF
-and BTF emission. The C library is Picolibc, linked as a bitcode archive from
-which the linker extracts only the members the program reaches. A small
-platform layer supplies what the C library expects from a system: a fiber-local
-`errno`, the TLSF heap, and OS functions that fail until the application
-replaces them.
+LLVM itself remains unpatched. `bpf-capsule-cc` emits bitcode; `bpf-capsule-ld`
+links the whole program with the runtime, runs Capsule's passes, and only then
+gives the result to LLVM's ordinary BPF backend for ELF and BTF emission. The C
+library is Picolibc, linked as a bitcode archive from which the linker extracts
+only the members the program reaches. A small platform layer supplies what the
+C library expects from a system: a fiber-local `errno`, the TLSF heap, and OS
+functions that fail until the application replaces them.
 
 ## What remains of the DOOM integration
 
@@ -883,11 +880,10 @@ a promise of identical results on another processor.
 
 ## LLVM and the verifier still do not agree
 
-The verifier solves the right problem: a bug in a loaded program must not
-crash the kernel. LLVM is equally entitled to replace a program with a
-semantically equivalent one. The trouble is at the boundary. Two forms can be
-identical to the CPU while only one lets the verifier recognize the required
-proof.
+The verifier solves the right problem: a bug in a loaded program must not crash
+the kernel. LLVM is equally entitled to replace a program with a semantically
+equivalent one. The trouble is at the boundary. Two forms can be identical to
+the CPU while only one lets the verifier recognize the required proof.
 
 Today this contract depends on `volatile`, inline assembly, control-flow shape,
 and BTF. An LLVM update can remove a necessary instruction; a verifier change
@@ -904,11 +900,11 @@ argument](https://github.com/llvm/llvm-project/issues/208141): a program with
 debug information differs from the same program without it.
 
 The answer to that gap is not to weaken the verifier but to write an explicit
-contract between it and the compiler: operations whose meaning is guaranteed
-to survive optimization, diagnostics that track pointer provenance, and
-end-to-end tests across LLVM IR, BPF, BTF, and several kernel versions.
-Physical ABI limits should likewise be transformed by a shared layer rather
-than worked around anew in every large BPF project.
+contract between it and the compiler: operations whose meaning is guaranteed to
+survive optimization, diagnostics that track pointer provenance, and end-to-end
+tests across LLVM IR, BPF, BTF, and several kernel versions. Physical ABI
+limits should likewise be transformed by a shared layer rather than worked
+around anew in every large BPF project.
 
 BPF Capsule ships its own passes because that layer does not exist yet. A good
 outcome for the project would be deleting those passes in favor of shared
@@ -946,8 +942,8 @@ the verifier can check.
 The virtual machine was its simplest complete form: the entire program became
 data, but every instruction paid the interpreter tax. Regions made one
 operation a large piece of compiled code. A software stack restored calls and
-recursion. Fibers gave every computation separate state. A shared memory
-window replaced the attempt to preserve the biography of every C pointer.
+recursion. Fibers gave every computation separate state. A shared memory window
+replaced the attempt to preserve the biography of every C pointer.
 
 DOOM was the first large test of this design; the interpreters named at the top
 of the article followed it. CPython is the one worth naming twice: the example
@@ -964,10 +960,9 @@ tests and examples into every supported kernel profile, from Linux 5.15 to the
 newest packaged kernel. For llama2.c it runs the real stories260K checkpoint in
 FP32 and Q8, then requires the tokens to match a native run of the same code;
 generation itself must finish without a single continuation, so a regression in
-the drive budget fails the check. For CPython it
-executes a script in the kernel that imports those modules, sends live packets
-through the Python observer, and then drives the same XDP program from two CPUs
-at once.
+the drive budget fails the check. For CPython it executes a script in the
+kernel that imports those modules, sends live packets through the Python
+observer, and then drives the same XDP program from two CPUs at once.
 
 One more port has already run end to end: the `scx_rustland` scheduler, moved
 into the kernel on Capsule, schedules real tasks with numbers comparable to its
