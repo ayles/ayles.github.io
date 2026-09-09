@@ -774,12 +774,10 @@ unexpected `PENDING` during frame processing.
 
 There is no single honest number for "Capsule is N times slower." The cost
 depends on how often execution crosses a region boundary, how much memory the
-program touches, and how much floating point it does. So the examples measure
-themselves: `lua`, `quickjs`, `sqlite`, and `python` run the same program
-natively with `--native`, `llama2` prints both times from one run, and `doom`
-reports per-frame statistics for whichever engine drew the frames. The
-in-kernel figure comes from BPF's own accounting, the native one from the CPU
-clock of the same code in the same process.
+program touches, and how much floating point it does. So every example measures
+itself, running the same program both ways: the in-kernel figure comes from
+BPF's own accounting, the native one from the CPU clock of the same code in the
+same process.
 
 All numbers below come from two machines with the governor set to
 `performance`, each run pinned to one core. The first is an Intel i7-12700K on
@@ -814,16 +812,14 @@ examples are built for the 6.10 profile, the first one with an arena on arm64:
 Every row is a median of three runs, and both of its halves come from one pair
 of commands. A package name without a suffix builds the example for the oldest
 supported kernel, so the profile is named explicitly here; the ARM64 table uses
-`-610` instead:
+`-610` instead. The flake pins the toolchain — LLVM 23 — so the same commands
+produce the same object elsewhere, and the scripts, models, and databases
+behind the tables are the ones in the repository:
 
 ```console
 $ sudo taskset -c 0 nix run .#lua-69 -- examples/lua/benchmark.lua
 $ taskset -c 0 nix run .#lua-69 -- --native examples/lua/benchmark.lua
 ```
-
-The flake pins the toolchain — LLVM 23 — so the same command produces the same
-object elsewhere, and the benchmark scripts, models, and databases behind the
-tables are the ones in the repository.
 
 The shape of the table matters more than any single number. Integer and pointer
 code — DOOM, SQLite — runs a few times slower than native userspace; the
@@ -870,16 +866,13 @@ both machines that interrupt is pinned to a performance core through
 | CPython | 368.2 Mbit/s | 30.8 µs | 76.3 Mbit/s | 131.1 µs |
 
 Upload is untouched in every run: XDP sees only the receive side. What the
-script does dominates the cost. Both example observers format one line per
-packet and ship it to userspace. A script that parses the same headers and
+script does dominates the rest. Both example observers format one line per
+packet and ship it to userspace; a script that parses the same headers and
 returns silently costs 5.8 µs per packet in Lua and 25.1 µs in CPython on the
-ARM64 machine; the Lua one leaves the gigabit almost intact, at 964.6 Mbit/s.
-The interpreter's floor is a few microseconds; everything above it is what the
-script was asked to do.
-
-None of this transfers between machines: the same Lua observer costs twice as
-much per packet on the ARM64 machine as on the Intel one. The tables show
-orders of magnitude, not a promise of the same results on another processor.
+ARM64 machine, and the Lua one leaves the gigabit almost intact, at 964.6
+Mbit/s. None of this transfers between machines either — the same observer
+costs twice as much per packet on ARM64 as on the Intel machine — so the tables
+show orders of magnitude, not a promise of the same results elsewhere.
 
 ## LLVM and the verifier still do not agree
 
@@ -934,34 +927,16 @@ A few limits are worth stating plainly before anyone builds on this.
 
 ## What the kernel ultimately sees
 
-At first I fought each constraint separately. Recursion became an array.
-Function pointers became chains of `if` statements. Wide calls became manual
-structures. Memory became numbers and a router. Loops became one
-`bpf_iter_num`. A deep call graph was inlined until the next stack overflow.
-Put those hacks next to one another, and they already resemble a small machine
-the verifier can check.
-
-The virtual machine was its simplest complete form: the entire program became
-data, but every instruction paid the interpreter tax. Regions made one
-operation a large piece of compiled code. A software stack restored calls and
-recursion. Fibers gave every computation separate state. A shared memory window
-replaced the attempt to preserve the biography of every C pointer.
-
-DOOM was the first large test of this design; the interpreters named at the top
-of the article followed it. CPython is the one worth naming twice: the example
-puts the pure-Python standard library in Capsule memory and runs an unmodified
-interpreter with statically linked modules — compression codecs, `sqlite3`,
-XML, `decimal`, and hashing. A second example gives every fiber its own
-isolated interpreter and lets a Python script watch packets at the XDP hook.
-
-This is not a list of things that once happened to run by hand. CI loads the
-tests and examples into every supported kernel profile, from Linux 5.15 to the
-newest packaged kernel. For llama2.c it runs the real stories260K checkpoint in
-FP32 and Q8, then requires the tokens to match a native run of the same code;
-generation itself must finish without a single continuation, so a regression in
-the drive budget fails the check. For CPython it executes a script in the
-kernel that imports those modules, sends live packets through the Python
-observer, and then drives the same XDP program from two CPUs at once.
+This is not a list of things that once happened to run by hand. CI loads
+the tests and examples into every supported kernel profile, from Linux 5.15 to
+the newest packaged kernel. For llama2.c it runs the real stories260K
+checkpoint in FP32 and Q8, then requires the tokens to match a native run of
+the same code; generation itself must finish without a single continuation, so
+a regression in the drive budget fails the check. For CPython it runs a script
+in the kernel that imports the statically linked modules — compression codecs,
+`sqlite3`, XML, `decimal`, hashing — sends live packets through a Python
+observer that has its own interpreter per fiber, and then drives the same XDP
+program from two CPUs at once.
 
 One more port has already run end to end: the `scx_rustland` scheduler, moved
 into the kernel on Capsule, schedules real tasks with numbers comparable to its
