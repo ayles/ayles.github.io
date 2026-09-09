@@ -53,7 +53,7 @@ run time.
 You can try it with one command on any supported kernel. You need Nix and a WAD
 file — for obvious reasons the WAD is not in the repository — and the rest of
 the requirements are in the
-[README](https://github.com/ayles/bpf-capsule#build):
+[README](https://github.com/ayles/bpf-capsule/blob/6733c4531f06f95a32a35c2084b3dcf1a4263746/README.md#build):
 
 ```console
 $ sudo nix run github:ayles/bpf-capsule#doom -- /path/to/doom1.wad tty
@@ -105,7 +105,7 @@ That creates constraints an ordinary program barely notices:
 - `r1` through `r5` are all the argument registers in the classic ABI;
 - the call graph must be acyclic, and call depth is limited;
 - only 512 bytes of stack are available along a call chain;
-- one object may contain no more than 256 BPF functions;
+- one loaded program may contain no more than 256 BPF functions;
 - after processing roughly a million instructions, the verifier gives up.
 
 That last limit is not an execution-time limit. The analyzer can walk a
@@ -117,8 +117,8 @@ Memory is more entertaining still. To the CPU, a pointer is ultimately just a
 number. To the verifier, it is a number with a biography. It may know that
 `r10 - 8` points into a valid BPF stack slot, or that `data + n` remains within
 a packet after a check against `data_end`. Store that pointer as ordinary 64
-bits and load it back, and the CPU gets the same address while the verifier
-gets a number with no right to be dereferenced.
+bits in a map and load it back, and the CPU gets the same address while the
+verifier gets a number with no right to be dereferenced.
 
 Normal C programs constantly put pointers in structures, pass those structures
 through several functions, and load the pointers much later. Somewhere along
@@ -128,7 +128,7 @@ that route, the verifier loses the proof.
 
 Writing a valid bounds check in C is not enough: the kernel sees the code after
 optimization. Here is a real fragment of [packet-processing BPF
-code](https://github.com/ayles/bpf-capsule/blob/main/examples/lua-xdp/lua_xdp_runtime.c):
+code](https://github.com/ayles/bpf-capsule/blob/6733c4531f06f95a32a35c2084b3dcf1a4263746/examples/lua-xdp/lua_xdp_runtime.c):
 
 ```c
 size_t at = offset + index;
@@ -242,16 +242,11 @@ enough. But to the verifier the first value is a scalar and the second is a
 `PTR_TO_MAP_VALUE` obtained from an ELF relocation. The kernel forbids
 `scalar - pointer`.
 
-Reversing the subtraction looks like a ready-made escape hatch. Take a real
-pointer to the right boundary of a section: on the CPU, `end_ptr - x` would
-produce a small distance to its end. Starting from the left boundary could
-similarly produce a small negative displacement. Such an operation on a map
-pointer is legal only when its second operand is already bounded. The verifier
-does not know that scalar `x` contains an address from the same map, so it sees
-an enormous or completely unknown pointer offset. The allowed arithmetic range
-is limited by `BPF_MAX_VAR_OFF`, or `2^29`, and this check happens before any
-later subtraction. Reducing the two bases afterwards is too late: the program
-is rejected at the first operation.
+Reversing the subtraction does not help. To the CPU, `end_ptr - x` would be a
+small distance to the section's end. But the verifier does not know that `x`
+contains an address from the same map: it sees an enormous or unknown pointer
+offset, outside the range allowed by `BPF_MAX_VAR_OFF` (`2^29`). Reducing the
+two bases afterwards is too late; the first operation is already forbidden.
 
 The same section base therefore had to exist in two forms—double-entry
 bookkeeping. A laundered copy could be subtracted from the unknown address,
@@ -379,9 +374,10 @@ piece a **region**.
 A region is bounded: it ends at a complex call, a return, a `yield`, an
 inconvenient loop backedge, or wherever the compiler decides to cut an
 oversized graph. It runs in full, saves live values, and returns to the
-dispatcher. The source program may suspend only at that boundary; in this
-sense, a region is atomic. The dispatcher invokes the next region. To the
-verifier this is an ordinary caller–callee boundary, not another part of DOOM's
+dispatcher. Capsule can suspend the computation only at that boundary; this
+does not prevent other fibers from running concurrently. The dispatcher invokes
+the next region. To the verifier this is an ordinary caller–callee boundary,
+not another part of DOOM's
 enormous control-flow graph.
 
 The verifier therefore never analyzes the whole path through the source
@@ -495,8 +491,8 @@ source call merely pushes another software frame. A function pointer becomes an
 ordinary 64-bit value in the code range just above the data window: `window + 4
 GiB + the number of its entry region`. An indirect call recovers the region
 number by truncating that value to its low word, and the dispatcher enters
-whatever region that number names; a number naming no region ends the
-computation with an invalid-dispatch error.
+the region it names. This is a representation of C function pointers, not a
+check that a forged pointer is a valid call target.
 
 The real BPF stack does not disappear. Its 512 bytes serve as scratch space for
 the current region. Values that must outlive a region are moved into the
@@ -509,10 +505,8 @@ shared. A `_Thread_local` variable gets one instance per fiber: the compiler
 collects all such variables into one block and indexes it by fiber number, so a
 library written for threads sees a thread where Capsule has a fiber.
 
-The fiber's control record holds no processor instruction address. Its resume
-field stores the compiler-assigned number of the next region, packed together
-with the physical function that owns it—closer to a region counter than a real
-program counter.
+The control record calls this field `resume_region_id`: an integer identifying
+the next region, not a processor instruction address or a counter to increment.
 
 `capsule_yield()` deliberately uses the same boundary. State remains in the
 fiber, while the caller receives a number that can resume the work in a later
@@ -572,20 +566,14 @@ A Capsule pointer is an ordinary `window_base + displacement` address. It has
 the same 64-bit value inside BPF and in the userspace process. Its low 32 bits
 are the displacement within the window.
 
-The pass first moves ordinary globals used by Capsule code into this window:
-`static` variables, strings, tables, and zero-filled buffers without an
-explicit BPF section. Every use becomes an address in the window. C
-initializers still matter: `static int x = 7`, strings, and ready-made tables
-must be loaded with the program, while a large zero-filled array only needs an
-address range. How that initial state reaches the kernel depends on the kernel
-version.
+Ordinary globals move into this window: `static` variables, strings, tables,
+and zero-filled buffers. Their initial values must arrive there too; how that
+happens depends on the memory backend.
 
-Explicitly sectioned objects are left alone. Maps in `SEC(".maps")` and control
-blocks such as DOOM's `SEC(".data.ctrl")` remain ordinary BPF maps loaded by
-libbpf. Through this small block the process gives DOOM a WAD pointer, its
-size, and input; BPF returns the frame pointer and call result. The WAD and
-framebuffer themselves live in the shared window and do not need to be copied
-through the control map.
+Explicitly sectioned objects stay outside this transformation. Maps in
+`SEC(".maps")` and control blocks such as DOOM's `SEC(".data.ctrl")` remain
+ordinary BPF maps loaded by libbpf. The control block carries pointers, sizes,
+and input; the WAD and framebuffer themselves live in the shared window.
 
 On Linux 6.9 and newer (6.10 on arm64, where JIT support for the arena landed
 later), the window is backed by `bpf_arena`: libbpf loads globals with non-zero
@@ -731,7 +719,7 @@ The compiler also:
 - replaces floating-point and 128-bit arithmetic with the software
   implementations from compiler-rt, compiled into the same object;
 - expands dynamic `memcpy`, `memmove`, and `memset`;
-- turns function pointers into checked region numbers;
+- turns function pointers into packed region IDs;
 - repairs BTF names and types;
 - moves excess temporary values out of the BPF stack after register allocation,
   while leaving pointers whose types the verifier must see on that stack.
@@ -775,9 +763,10 @@ unexpected `PENDING` during frame processing.
 There is no single honest number for "Capsule is N times slower." The cost
 depends on how often execution crosses a region boundary, how much memory the
 program touches, and how much floating point it does. So every example measures
-itself, running the same program both ways: the in-kernel figure comes from
-BPF's own accounting, the native one from the CPU clock of the same code in the
-same process.
+itself: the in-kernel figure comes from BPF's own accounting, the native one
+from the CPU time of the same workload in userspace. Loading and verification
+are outside these timings. CPython's native mode uses the flake's host Python
+3.14; both Python timings include interpreter startup.
 
 All numbers below come from two machines with the governor set to
 `performance`, each run pinned to one core. The first is an Intel i7-12700K on
@@ -809,55 +798,53 @@ examples are built for the 6.10 profile, the first one with an arena on arm64:
 | llama2.c, Q8 | 23.2 ms | 539.3 ms | **23.2×** |
 | llama2.c, FP32 | 13.0 ms | 775.2 ms | **59.6×** |
 
-Every row is a median of three runs, and both of its halves come from one pair
-of commands. A package name without a suffix builds the example for the oldest
-supported kernel, so the profile is named explicitly here; the ARM64 table uses
-`-610` instead. The flake pins the toolchain — LLVM 23 — so the same commands
-produce the same object elsewhere, and the scripts, models, and databases
-behind the tables are the ones in the repository:
+Every row is a median of three runs. The
+[workloads and build recipes](https://github.com/ayles/bpf-capsule/tree/6733c4531f06f95a32a35c2084b3dcf1a4263746/examples)
+are in the repository; the flake pins the toolchain, including LLVM 23. From a
+checkout, a pair looks like this (`-610` on arm64):
 
 ```console
 $ sudo taskset -c 0 nix run .#lua-69 -- examples/lua/benchmark.lua
 $ taskset -c 0 nix run .#lua-69 -- --native examples/lua/benchmark.lua
 ```
 
-The shape of the table matters more than any single number. Integer and pointer
-code — DOOM, SQLite — runs a few times slower than native userspace; the
+These are comparisons within each example, not a race between interpreters:
+their benchmark scripts differ. The shape of the table matters more than any
+single number. Integer and pointer code — DOOM, SQLite — runs a few times
+slower than native userspace; the
 interpreter from the first attempt cost about sixty times native on exactly
 that kind of code. Interpreters land around an order of magnitude, because
-their own dispatch loop is exactly what becomes region dispatch. CPython sits
-at the far end of that group on both machines: it writes a reference count on
-every object it touches, allocates boxed integers, strings, and dictionaries
-constantly, and calls more helpers per bytecode than Lua does — memory traffic
-and calls across region boundaries are exactly what this machine charges for.
+their own dispatch loops also cross region boundaries. CPython sits at the
+far end of that group on both machines. Reference counting, allocation, and
+helper calls all add work in the places Capsule makes expensive; the table
+does not isolate their individual contributions.
 Floating point is the outlier: llama2.c's FP32 model is sixty times slower
 because the target has no FPU and every operation becomes a call into software
-floating point. Its Q8 model does the same job in integers, and the penalty
-falls to nineteen times.
+floating point. Q8 replaces much of that arithmetic with integer work, and the
+penalty falls to about nineteen to twenty-three times.
 
 Compatibility costs too. The same example without a suffix — `nix run .#lua` —
-is built for Linux 5.15, where there is no arena and every memory access goes
-through a map accessor: the benchmark then takes 983.6 ms on the Intel machine
-instead of 524.0, and DOOM's frame on the ARM64 machine grows from 0.906 ms to
-3.698 ms. Old kernels are supported, not free.
+is built for Linux 5.15, where there is no arena and dynamic heap accesses go
+through the map router. The Lua benchmark then takes 983.6 ms on the Intel
+machine instead of 524.0. Old kernels are supported, not free.
 
 Every number so far comes from a program that runs to completion in its own
 time. A packet observer does not get that luxury. The ready-to-run [Lua-XDP
-example](https://github.com/ayles/bpf-capsule/tree/main/examples/lua-xdp)
+example](https://github.com/ayles/bpf-capsule/tree/6733c4531f06f95a32a35c2084b3dcf1a4263746/examples/lua-xdp)
 attaches Lua 5.5.1 to a real XDP hook, and its CPython twin does the same with
 an interpreter that has a standard library. A script supplied at startup sees
 every received packet and emits results through a ring buffer:
 
 ```console
-$ sudo nix run .#lua-xdp -- examples/lua-xdp/packet_observer.lua eth0
+$ sudo nix run .#lua-xdp-69 -- examples/lua-xdp/packet_observer.lua eth0
 ```
 
 The natural question is what that costs a real link. Both machines have a
-gigabit interface, so I measured a download with and without an observer
-attached and read the per-packet cost from the kernel's own counter for the XDP
-program. Packet processing runs where the interface's interrupt lands, so on
-both machines that interrupt is pinned to a performance core through
-`/proc/irq/N/smp_affinity_list`:
+gigabit interface, so I measured a download with and without an observer,
+using the same arena profiles as above (`-610` on arm64). Per-packet time is
+the XDP program's accumulated kernel run time divided by its invocation count.
+For these runs the receive queue's interrupt was pinned to a performance core
+through `/proc/irq/N/smp_affinity_list`:
 
 | Observer | Intel, download | per packet | ARM64, download | per packet |
 |---|---:|---:|---:|---:|
@@ -865,14 +852,14 @@ both machines that interrupt is pinned to a performance core through
 | Lua | 643.3 Mbit/s | 16.7 µs | 295.5 Mbit/s | 35.4 µs |
 | CPython | 368.2 Mbit/s | 30.8 µs | 76.3 Mbit/s | 131.1 µs |
 
-Upload is untouched in every run: XDP sees only the receive side. What the
-script does dominates the rest. Both example observers format one line per
-packet and ship it to userspace; a script that parses the same headers and
+XDP runs on receive, but an upload still produces incoming ACKs for the
+observer to process; it is not exempt from the cost. Both example observers
+format one line per packet and ship it to userspace; a script that parses the same headers and
 returns silently costs 5.8 µs per packet in Lua and 25.1 µs in CPython on the
 ARM64 machine, and the Lua one leaves the gigabit almost intact, at 964.6
-Mbit/s. None of this transfers between machines either — the same observer
-costs twice as much per packet on ARM64 as on the Intel machine — so the tables
-show orders of magnitude, not a promise of the same results elsewhere.
+Mbit/s. These link measurements include the effects of packet sizes, network
+conditions, and draining the output ring buffer. They are workload results,
+not a universal throughput limit for either interpreter.
 
 ## LLVM and the verifier still do not agree
 
@@ -910,9 +897,9 @@ infrastructure, not maintaining a private LLVM pipeline forever.
 
 A few limits are worth stating plainly before anyone builds on this.
 
-- This is research software, not a security boundary: the verifier still
-  guarantees that a program cannot crash the kernel, but Capsule does not
-  protect one part of a program from another.
+- This is research software, not a security boundary between guest components.
+  The kernel's BPF checks still apply, but Capsule does not protect one part
+  of a program from another.
 - There is no operating system inside: no files, sockets, processes, or
   threads. There is a C library, an allocator, and fibers; anything resembling
   a system call is implemented by the application or supplied by the host.
@@ -920,23 +907,15 @@ A few limits are worth stating plainly before anyone builds on this.
   fibers, the size of the stack and heap, the budget of a single call.
 - The proofs the verifier accepts depend on LLVM and kernel versions. CI checks
   the supported profiles, but a new version of either may require changes.
-- The performance cost runs from three times slower for integer and pointer
-  code, through an order of magnitude for interpreters, to sixty times for
-  software floating point. "The price of getting large code into the kernel"
-  has the numbers.
 
 ## What the kernel ultimately sees
 
-This is not a list of things that once happened to run by hand. CI loads
-the tests and examples into every supported kernel profile, from Linux 5.15 to
-the newest packaged kernel. For llama2.c it runs the real stories260K
-checkpoint in FP32 and Q8, then requires the tokens to match a native run of
-the same code; generation itself must finish without a single continuation, so
-a regression in the drive budget fails the check. For CPython it runs a script
-in the kernel that imports the statically linked modules — compression codecs,
-`sqlite3`, XML, `decimal`, hashing — sends live packets through a Python
-observer that has its own interpreter per fiber, and then drives the same XDP
-program from two CPUs at once.
+The tests go beyond successful loading: they compare llama2.c's generated
+tokens with a native run, check DOOM's frames, and exercise CPython imports and
+packet processing from two CPUs. CI builds each supported capability profile
+and runs it on a compatible packaged kernel, not necessarily the exact version
+named by the profile. CPython is tested only on profiles with arena memory and
+the other features its port requires; it is not a Linux 5.15 example.
 
 One more port has already run end to end: the `scx_rustland` scheduler, moved
 into the kernel on Capsule, schedules real tasks with numbers comparable to its
