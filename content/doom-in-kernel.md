@@ -46,9 +46,9 @@ that stock Linux accepts.
 DOOM is not the application here but a stress test for that approach. Lua,
 QuickJS, SQLite, zlib, wasm3, llama2.c, `no_std` Rust, and CPython 3.14 run on
 the same scheme today, and Lua and Python inspect live packets straight from
-XDP. This article shows how the road from a hand-trimmed port through a slow
-interpreter led to regions, a software stack, fibers, and one shared memory
-window — and what such a construction costs at run time.
+XDP. This article follows the road from a hand-trimmed port through a slow
+interpreter to the machine that runs them today, and what that machine costs at
+run time.
 
 You can try it with one command on any supported kernel. You need Nix and a WAD
 file — for obvious reasons the WAD is not in the repository — and the rest of
@@ -811,20 +811,19 @@ examples are built for the 6.10 profile, the first one with an arena on arm64:
 | llama2.c, Q8 | 23.2 ms | 539.3 ms | **23.2×** |
 | llama2.c, FP32 | 13.0 ms | 775.2 ms | **59.6×** |
 
-Every row is a median of three runs. A package name without a suffix builds the
-example for the oldest supported kernel, so the profile is named explicitly
-here; the Lua row is two commands away, and the ARM64 table uses `-610`
-instead:
+Every row is a median of three runs, and both of its halves come from one pair
+of commands. A package name without a suffix builds the example for the oldest
+supported kernel, so the profile is named explicitly here; the ARM64 table uses
+`-610` instead:
 
 ```console
 $ sudo taskset -c 0 nix run .#lua-69 -- examples/lua/benchmark.lua
 $ taskset -c 0 nix run .#lua-69 -- --native examples/lua/benchmark.lua
 ```
 
-Both halves of a row come from that one command pair, and the flake pins the
-toolchain that builds them — LLVM 23 — so the same command produces the same
-object elsewhere. The benchmark scripts, models, and databases the tables
-measure are the ones in the repository.
+The flake pins the toolchain — LLVM 23 — so the same command produces the same
+object elsewhere, and the benchmark scripts, models, and databases behind the
+tables are the ones in the repository.
 
 The shape of the table matters more than any single number. Integer and pointer
 code — DOOM, SQLite — runs a few times slower than native userspace; the
@@ -878,10 +877,9 @@ ARM64 machine; the Lua one leaves the gigabit almost intact, at 964.6 Mbit/s.
 The interpreter's floor is a few microseconds; everything above it is what the
 script was asked to do.
 
-None of this transfers between machines. The same Lua observer costs twice as
-much per packet on the ARM64 machine as on the Intel one, even though their
-ratios against native code stay close. The tables show orders of magnitude, not
-a promise of identical results on another processor.
+None of this transfers between machines: the same Lua observer costs twice as
+much per packet on the ARM64 machine as on the Intel one. The tables show
+orders of magnitude, not a promise of the same results on another processor.
 
 ## LLVM and the verifier still do not agree
 
@@ -940,7 +938,6 @@ At first I fought each constraint separately. Recursion became an array.
 Function pointers became chains of `if` statements. Wide calls became manual
 structures. Memory became numbers and a router. Loops became one
 `bpf_iter_num`. A deep call graph was inlined until the next stack overflow.
-
 Put those hacks next to one another, and they already resemble a small machine
 the verifier can check.
 
@@ -956,9 +953,6 @@ puts the pure-Python standard library in Capsule memory and runs an unmodified
 interpreter with statically linked modules — compression codecs, `sqlite3`,
 XML, `decimal`, and hashing. A second example gives every fiber its own
 isolated interpreter and lets a Python script watch packets at the XDP hook.
-
-None of that is free: the tables above put the price between three and sixty
-times native code, depending on what the program spends its time doing.
 
 This is not a list of things that once happened to run by hand. CI loads the
 tests and examples into every supported kernel profile, from Linux 5.15 to the
