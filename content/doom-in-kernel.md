@@ -796,7 +796,7 @@ for the 6.9 profile:
 | llama2.c, Q8 | 14.6 ms | 274.8 ms | **18.8×** |
 | llama2.c, FP32 | 7.5 ms | 471.2 ms | **62.9×** |
 
-The second is an ARM64 laptop on Linux 7.0.12, measured on one of its big
+The second is an ARM64 machine on Linux 7.0.12, measured on one of its big
 Cortex-A720 cores at 2.6 GHz — the same idea as the Intel P-core, next to
 smaller Cortex-A520 cores that would give quite different numbers. There the
 examples are built for the 6.10 profile, the first one with an arena on arm64:
@@ -838,7 +838,7 @@ falls to nineteen times.
 Compatibility costs too. The same example without a suffix — `nix run .#lua` —
 is built for Linux 5.15, where there is no arena and every memory access goes
 through a map accessor: the benchmark then takes 983.6 ms on the Intel machine
-instead of 524.0, and DOOM's frame on the ARM64 laptop grows from 0.906 ms to
+instead of 524.0, and DOOM's frame on the ARM64 machine grows from 0.906 ms to
 3.698 ms. Old kernels are supported, not free.
 
 Every number so far comes from a program that runs to completion in its own
@@ -874,7 +874,7 @@ The interpreter's floor is a few microseconds; everything above it is what the
 script was asked to do.
 
 None of this transfers between machines. The same Lua observer costs twice as
-much per packet on the ARM64 laptop as on the Intel one, even though their
+much per packet on the ARM64 machine as on the Intel one, even though their
 ratios against native code stay close. The tables show orders of magnitude, not
 a promise of identical results on another processor.
 
