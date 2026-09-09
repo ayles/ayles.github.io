@@ -114,11 +114,11 @@ budget. A finite loop is legal in itself; the problem starts when the kernel
 cannot prove its bound or has to enumerate too many possibilities.
 
 Memory is more entertaining still. To the CPU, a pointer is ultimately just a
-number. To the verifier, it is a number with a biography. It may know that `r10
-- 8` points into a valid BPF stack slot, or that `data + n` remains within a
-packet after a check against `data_end`. Store that pointer as ordinary 64 bits
-and load it back, and the CPU gets the same address while the verifier gets a
-number with no right to be dereferenced.
+number. To the verifier, it is a number with a biography. It may know that
+`r10 - 8` points into a valid BPF stack slot, or that `data + n` remains within
+a packet after a check against `data_end`. Store that pointer as ordinary 64
+bits and load it back, and the CPU gets the same address while the verifier
+gets a number with no right to be dereferenced.
 
 Normal C programs constantly put pointers in structures, pass those structures
 through several functions, and load the pointers much later. Somewhere along
@@ -239,8 +239,8 @@ real BPF stack does not help; DOOM's arbitrary heap will not fit in 512 bytes.
 Before an access, that number has to be tied again to an object known by the
 kernel. It sounds as if subtracting the start of `.data` or `.bss` should be
 enough. But to the verifier the first value is a scalar and the second is a
-`PTR_TO_MAP_VALUE` obtained from an ELF relocation. The kernel forbids `scalar
-- pointer`.
+`PTR_TO_MAP_VALUE` obtained from an ELF relocation. The kernel forbids
+`scalar - pointer`.
 
 Reversing the subtraction looks like a ready-made escape hatch. Take a real
 pointer to the right boundary of a section: on the CPU, `end_ptr - x` would
