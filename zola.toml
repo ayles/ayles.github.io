@@ -15,17 +15,6 @@ minify_html = true
 feed = "feed"
 minutes = "min read"
 
-[languages.ru]
-title = "ayles"
-description = "Заметки про eBPF, системное программирование и прочие низкоуровневые вещи"
-generate_feeds = true
-feed_filenames = ["atom.xml"]
-build_search_index = false
-
-[languages.ru.translations]
-feed = "лента"
-minutes = "мин чтения"
-
 [markdown.highlighting]
 # Class-based highlighting: Zola emits giallo-light.css / giallo-dark.css
 # and code blocks follow the visitor's light/dark preference.

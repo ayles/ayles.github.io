@@ -10,12 +10,6 @@
   <meta property="og:url" content="{{ page.permalink }}">
   <meta property="og:site_name" content="{{ config.title }}">
   <meta name="twitter:card" content="summary">
-  {% for translation in page.translations %}
-  <link rel="alternate" hreflang="{% if translation.lang %}{{ translation.lang }}{% else %}{{ config.default_language }}{% endif %}" href="{{ translation.permalink }}">
-  {% if translation.lang == config.default_language %}
-  <link rel="alternate" hreflang="x-default" href="{{ translation.permalink }}">
-  {% endif %}
-  {% endfor %}
 {% endblock head %}
 
 {% block content %}
@@ -24,13 +18,6 @@
   <div class="meta">
     <time datetime="{{ page.date }}">{{ page.date | date(format="%Y-%m-%d") }}</time>
     <span>{{ page.reading_time }} {{ trans(key='minutes', lang=lang) }}</span>
-    {% if page.translations | length > 1 %}
-    <nav class="languages" aria-label="Language">
-      {% for translation in page.translations | sort(attribute="lang") %}
-      <a href="{{ translation.permalink }}"{% if translation.permalink == page.permalink %} aria-current="page"{% endif %}>{% if translation.lang == "ru" %}RU{% else %}EN{% endif %}</a>
-      {% endfor %}
-    </nav>
-    {% endif %}
   </div>
   {{ page.content | safe }}
 </article>
