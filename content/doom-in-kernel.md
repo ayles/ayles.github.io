@@ -821,6 +821,11 @@ $ sudo taskset -c 0 nix run .#lua-69 -- examples/lua/benchmark.lua
 $ taskset -c 0 nix run .#lua-69 -- --native examples/lua/benchmark.lua
 ```
 
+Both halves of a row come from that one command pair, and the flake pins the
+toolchain that builds them — LLVM 23 — so the same command produces the same
+object elsewhere. The benchmark scripts, models, and databases the tables
+measure are the ones in the repository.
+
 The shape of the table matters more than any single number. Integer and pointer
 code — DOOM, SQLite — runs a few times slower than native userspace; the
 interpreter from the first attempt cost about sixty times native on exactly
