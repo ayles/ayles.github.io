@@ -8,11 +8,22 @@ draft = false
 DOOM is not supposed to run inside eBPF. Linux should reject a program like
 that before executing its first instruction.
 
-BPF has a tiny stack, five argument registers, and limited call depth.
-Recursion is forbidden. A loop must be finite not merely because the
-programmer says so, but in terms the verifier can prove. You cannot simply
-store a pointer in memory, load it later, and dereference it: the kernel must
-remember where it came from and what it is allowed to address.
+eBPF is a way to run user-supplied code inside the Linux kernel without kernel
+modules. A program is compiled to the bytecode of a small register machine,
+loaded with the `bpf(2)` system call, and attached by the kernel to one of its
+own points: the arrival of a network packet (XDP), the entry of a kernel
+function, a system call. From then on the kernel runs it through its own JIT on
+every such event, as ordinary machine code. The price of that freedom is a
+static check before loading, and anything the checker cannot prove is
+forbidden.
+
+That checker is the verifier, and it is strict. BPF has a tiny stack, five
+argument registers, and limited call depth. Recursion is forbidden. A loop must
+be finite not merely because the programmer says so, but in terms the verifier
+can prove. You cannot simply store a pointer in memory, load it later, and
+dereference it: the kernel must remember where it came from and what it is
+allowed to address. It is that check, rather than the bytecode itself, that
+makes DOOM inside eBPF look impossible at first glance.
 
 And yet an unmodified Linux kernel accepts my BPF object, checks it with the
 stock verifier, and runs it through the stock JIT. DOOM initialization, game
@@ -37,11 +48,12 @@ DOOM is not the application here but a stress test for that approach. Lua,
 QuickJS, SQLite, zlib, wasm3, llama2.c, `no_std` Rust, and CPython 3.14 run on
 the same scheme today, and Lua and Python inspect live packets straight from
 XDP. This article shows how the road from a hand-trimmed port through a slow
-interpreter led to regions, a software stack, and fibers, and what such a
-construction costs at run time.
+interpreter led to regions, a software stack, fibers, and one shared memory
+window — and what such a construction costs at run time.
 
-One command tries it on any supported kernel. It needs Nix and a WAD, which is
-naturally not in the repository; the rest of the requirements are in the
+You can try it with one command on any supported kernel. You need Nix and a WAD
+file — for obvious reasons the WAD is not in the repository — and the rest of
+the requirements are in the
 [README](https://github.com/ayles/bpf-capsule#build):
 
 ```console
@@ -69,20 +81,6 @@ to be built next.
 terminal characters over SSH. DOOM runs inside the kernel BPF JIT on the left.
 On the right are samples from real `bpf_dispatch_output_scalar_*` functions:
 physical functions into which Capsule packed the regions.*
-
-## eBPF in brief
-
-eBPF is a way to run user-supplied code inside the Linux kernel without kernel
-modules. A program is compiled to the bytecode of a small register machine,
-loaded with the `bpf(2)` system call, and attached by the kernel to one of its
-own points: the arrival of a network packet (XDP), the entry of a kernel
-function, a system call. From then on the kernel runs it through its own JIT on
-every such event, as ordinary machine code.
-
-The price of that freedom is a static check before loading. The verifier has to
-prove that the program terminates and never touches memory it has no right to;
-anything it cannot prove is forbidden. It is that check, rather than the
-bytecode itself, that makes DOOM inside eBPF look impossible at first glance.
 
 ## Why this should be impossible
 
@@ -129,9 +127,9 @@ that route, the verifier loses the proof.
 
 ### A recent LLVM example
 
-It is not enough to merely write a valid bounds check in C: the kernel sees the
-code after optimization. Here is a real fragment of
-[packet-processing BPF code](https://github.com/ayles/bpf-capsule/blob/main/examples/lua-xdp/lua_xdp_runtime.c):
+Writing a valid bounds check in C is not enough: the kernel sees the code after
+optimization. Here is a real fragment of [packet-processing BPF
+code](https://github.com/ayles/bpf-capsule/blob/main/examples/lua-xdp/lua_xdp_runtime.c):
 
 ```c
 size_t at = offset + index;
@@ -162,10 +160,10 @@ Before involving the kernel, there is an intermediate step: compile DOOM to
 BPF and run the object in a userspace virtual machine. With no verifier, code
 generation bugs can be separated from failures to prove safety.
 
-I based the experiment on [PureDOOM](https://github.com/Daivuk/PureDOOM), a port
-that packages the whole engine into one C header and exposes a short embedding
-interface. It is convenient for an experiment like this while leaving DOOM
-itself almost entirely ordinary C.
+I based the experiment on [PureDOOM](https://github.com/Daivuk/PureDOOM), a
+port that packages the whole engine into one C header and exposes a short
+embedding interface. It is convenient for an experiment like this while leaving
+DOOM itself almost entirely ordinary C.
 
 Even without the verifier, arbitrary C does not become BPF by itself. The
 classic ABI has nowhere to put a sixth argument, and BPF has neither
@@ -183,8 +181,8 @@ there: the VM's frame size and total memory reserve can simply be increased.
 This proved LLVM could emit working BPF code, but said nothing about whether a
 real kernel would accept it.
 
-DOOM had been run in a userspace BPF machine before. One example is
-[Flying the nest — a BPF port of Doom](https://lpc.events/event/18/contributions/1936/),
+DOOM had been run in a userspace BPF machine before. One example is [Flying the
+nest — a BPF port of Doom](https://lpc.events/event/18/contributions/1936/),
 which used its own νBPF VM. Inside a VM, you can change the machine's rules. My
 goal was different: an object accepted by the ordinary Linux verifier and
 executed by the ordinary in-kernel BPF JIT.
@@ -392,19 +390,22 @@ program. It sees a small region and a bounded dispatcher. A normal call is
 split roughly like this:
 
 ```text
-render_frame:  [ region 17 ] --call--> [ region 18: continuation ]
-                     |
-                     `--> R_DrawPlanes: [ region 42 ] --> [ region 43 ]
+render_frame:   [ 17 ] ---call---> R_DrawPlanes: [ 42 ] ---> [ 43 ]
+                                                               |
+                [ 18 ] <--------------- return ----------------'
+                continuation of render_frame
 
-at every boundary:
-  save live values + region number --> dispatcher --> next region
+at every arrow the region saves its live values and the number of the next
+region, returns to the dispatcher, and the dispatcher calls that region
 ```
 
-A region does not have to become a separate BPF function. LLVM first generates
-code and allocates registers for small independent groups of regions—usually
-one group per source function, with very large functions split again. Capsule
-then packs several completed groups, including groups from different source
-functions, into one real BPF function.
+A region does not have to become a separate BPF function. LLVM generates code
+and allocates registers for a whole group of regions at once, and that group is
+normally every region of one source function; a source function too large for
+the verifier is cut into several groups first. Capsule then places the groups
+whole, largest first, each into the physical function holding the least code so
+far, so one physical function usually owns the regions of several source
+functions.
 
 One BPF function per region would quickly hit the 256-function limit. One
 function for the whole program is bad as well: the kernel repeatedly performs
@@ -412,11 +413,12 @@ live-value analysis across the entire monster and load time explodes. Instead,
 the object contains several physical functions of roughly equal size:
 
 ```text
-regions from source functions          physical BPF functions
+groups of regions, one per             physical BPF functions
+source function
 
-render: 17, 18  -+                     function 0: 17, 42, 61
-planes: 42, 43   +-- packing -->       function 1: 18, 43
-things: 61      -+
+render: 17, 18     ----+               function 0: 42, 43, 44
+planes: 42, 43, 44 ----+-- packing --> function 1: 17, 18, 61
+things: 61         ----+
 
 packed region number: [ 16 bits: region inside the function | 8 bits: function ]
                         selected by a compare tree            selected by a mask
@@ -441,11 +443,11 @@ its own, while fibers, memory, and continuations keep working through them
 unchanged. This needs BPF trampolines: any supported kernel on x86-64, and
 Linux 6.0 or newer on arm64.
 
-This remains BPF compiled by the stock JIT, not interpreted LLVM IR or another
-ISA. The verifier checks every instruction inside a region, and the kernel JIT
-compiles it. What remains of the virtual machine is an explicit next-operation
-number, stack, and state—but dispatch happens at the boundary of a large piece
-of work rather than after every `add`.
+With or without extensions, this remains BPF compiled by the stock JIT, not
+interpreted LLVM IR or another ISA. The verifier checks every instruction
+inside a region, and the kernel JIT compiles it. What remains of the virtual
+machine is an explicit next-operation number, stack, and state, but dispatch
+happens at the boundary of a large piece of work rather than after every `add`.
 
 ## Where the fibers and second stack came from
 
@@ -468,12 +470,13 @@ This has a small ABI of its own. A frame looks roughly like this:
         | variadic arguments             |  layout known at the call site
         | fixed arguments                |
         | optional result area           |  written by the callee
-        +--------------------------------+
- fp+8 --| region to run after return     |
- fp   --| caller's fp                    |
-        +--------------------------------+
+fp+16 --+--------------------------------+
+        | region to run after return     |
+ fp+8 --+--------------------------------+
+        | caller's fp                    |
+   fp --+--------------------------------+
         | callee locals and saved values |
- sp   --+--------------------------------+  allocated-stack frontier
+   sp --+--------------------------------+  allocated-stack frontier
              lower addresses
 ```
 
@@ -493,15 +496,16 @@ Recursion does not turn into recursive calls between BPF functions. Every
 source call merely pushes another software frame. A function pointer becomes an
 ordinary 64-bit value in the code range just above the data window: `window +
 4 GiB + the number of its entry region`. An indirect call recovers the region
-number by truncating that value to its low word and checks it against the list
-of functions with the same type.
+number by truncating that value to its low word, and the dispatcher enters
+whatever region that number names; a number naming no region ends the
+computation with an invalid-dispatch error.
 
 The real BPF stack does not disappear. Its 512 bytes serve as scratch space for
 the current region. Values that must outlive a region are moved into the
 software frame.
 
-One set consisting of the current region, stack and frame pointers, state, and
-its own software-stack slice forms a **fiber**. There may be several fibers:
+The current region, the stack and frame pointers, the saved state, and one
+slice of software stack together make a **fiber**. There may be several fibers:
 each has separate state and stack storage, while globals and the heap are
 shared. A `_Thread_local` variable gets one instance per fiber: the compiler
 collects all such variables into one block and indexes it by fiber number, so a
@@ -525,15 +529,17 @@ the dispatcher.
 
 ### Why the verifier accepts this dispatcher
 
-The dispatcher is three bounded loops, each in its own global function: the
-entry program repeats a level that repeats a step, and the step itself runs up
-to thirty-two regions before returning. The verifier checks a global function
-once and does not descend into it from a call site, so analysis complexity
-adds while the number of transitions at runtime multiplies. One invocation can
-execute roughly 4.2 million regions even though the graph proved by the kernel
-remains small. Batching regions inside the step is what makes the innermost
-loop worth having: every region after the first reuses one function call
-instead of paying for its own.
+The dispatcher is three bounded loops. The innermost one, the step, runs up to
+thirty-two regions and returns; the level above calls the step up to 2,048
+times; the entry program calls that level up to 64 times. The two inner loops
+are global functions of their own, and the verifier checks a global function
+once without descending into it from a call site, so analysis complexity adds
+up while the number of transitions at runtime multiplies: 32 × 2,048 × 64 is
+about 4.2 million regions in one invocation, even though the graph proved by
+the kernel stays small.
+
+Batching regions inside the step also buys speed: every region after the first
+reuses one function call instead of paying for its own.
 
 When the computation finishes, `capsule_call()` returns `CAPSULE_OK`. If it
 uses the entire transition budget, the BPF invocation still terminates and
@@ -543,7 +549,7 @@ pass that number to `capsule_continue()`.
 For DOOM, I expect initialization and every frame to fit in one invocation.
 Capsule knows nothing about that expectation and has no game-specific behavior.
 The example integration simply never calls `capsule_continue()` and treats any
-`PENDING` as a regression; tests confirm this on the supported profiles.
+`PENDING` as a regression.
 
 ## What pointer laundering became
 
@@ -566,7 +572,7 @@ The pass first moves ordinary globals used by Capsule code into this window:
 explicit BPF section. Every use becomes an address in the window. C
 initializers still matter: `static int x = 7`, strings, and ready-made tables
 must be loaded with the program, while a large zero-filled array only needs an
-address range. The way this initial state is represented depends on the kernel
+address range. How that initial state reaches the kernel depends on the kernel
 version.
 
 Explicitly sectioned objects are left alone. Maps in `SEC(".maps")` and control
@@ -594,12 +600,12 @@ full window + offset pointer
 
 On kernels without a usable arena, the same four gigabytes are assembled from
 4-MiB pieces. The compiler lays globals out consecutively, serializes their
-initial values into a flat byte image, and cuts its first pieces into separate
-global-data maps; the linker picks how many from the remaining map budget,
-usually 32. A piece containing any non-zero byte becomes `.data.heapN`; an
-entirely zero-filled piece becomes `.bss.heapN`. Only one of the two maps
-exists for any index. All later pieces, including software stacks, become
-4-MiB values in one `ARRAY` map.
+initial values into a flat byte image, and cuts the first pieces of that image
+into separate global-data maps. How many is up to the linker, which takes
+whatever is left of the map budget — usually 32. A piece containing any
+non-zero byte becomes `.data.heapN`; an entirely zero-filled piece becomes
+`.bss.heapN`. Only one of the two maps exists for any index. All later pieces,
+including software stacks, become 4-MiB values in one `ARRAY` map.
 
 ```text
 full pointer p
@@ -621,13 +627,12 @@ A boundary between two pieces needs care. A map value cannot be read past its
 end, and an access lying across two pieces would need two map lookups. Pieces
 are 4-MiB aligned, so an access aligned to its own width cannot cross one: a
 naturally aligned `uint64_t` lies entirely inside a single piece. The compiler
-therefore trusts LLVM's alignment information and, before routing, splits every
+therefore trusts LLVM's alignment information. Before routing, it splits every
 load or store whose alignment is smaller than its width into naturally aligned
 fragments, each selecting its own map: an eight-byte load through a
 four-aligned pointer becomes two four-byte loads, and a one-aligned one becomes
 eight single-byte loads. Claiming an alignment that is not there is undefined
-behavior, exactly as on any other platform. Userspace maps these pieces next to
-one another in the same window.
+behavior, exactly as on any other platform.
 
 The userspace process maps the same pages at the same addresses. BPF can
 therefore return an `unsigned char *` to the framebuffer, and the process can
@@ -644,15 +649,15 @@ program. Fibers share one heap, but each keeps its own software stack.
 Userspace allocates from the same heap through `bpf_capsule_malloc()`, which
 runs the guest allocator in the kernel through `BPF_PROG_TEST_RUN`.
 
-While TLSF holds a lock and edits free lists, the computation must not return to
-the dispatcher. `CAPSULE_NOSUSPEND` marks allocator functions: the compiler
+While TLSF holds a lock and edits free lists, the computation must not return
+to the dispatcher. `CAPSULE_NOSUSPEND` marks allocator functions: the compiler
 must prove that each function and everything it calls finish without
 suspension. An unprovable loop or suspendable call becomes a build error. A
 short TLSF operation therefore stays in one ordinary BPF call with no
 dispatcher boundary: it cannot suspend between acquiring and releasing its
 lock. If the lock is busy, ordinary `malloc()` retries outside that operation.
 
-### Where Capsule ends
+### Where the transformation stops
 
 Not every pointer can or should be transformed. Globals explicitly placed in a
 BPF section remain ordinary maps. A local whose address is passed to a BPF
@@ -722,7 +727,6 @@ The compiler also:
   implementations from compiler-rt, compiled into the same object;
 - expands dynamic `memcpy`, `memmove`, and `memset`;
 - turns function pointers into checked region numbers;
-- gives every `_Thread_local` variable one instance per fiber;
 - repairs BTF names and types;
 - moves excess temporary values out of the BPF stack after register allocation,
   while leaving pointers whose types the verifier must see on that stack.
@@ -766,13 +770,17 @@ unexpected `PENDING` during frame processing.
 
 There is no single honest number for "Capsule is N times slower." The cost
 depends on how often execution crosses a region boundary, how much memory the
-program touches, and how much floating point it does. So every example measures
-itself: it runs the same program natively with `--native` and reports both
-times. The in-kernel figure comes from BPF's own accounting, the native one
-from the CPU clock of the same code in the same process.
+program touches, and how much floating point it does. So the examples measure
+themselves: `lua`, `quickjs`, `sqlite`, and `python` run the same program
+natively with `--native`, `llama2` prints both times from one run, and `doom`
+reports per-frame statistics for whichever engine drew the frames. The
+in-kernel figure comes from BPF's own accounting, the native one from the CPU
+clock of the same code in the same process.
 
-On an Intel i7-12700K pinned to a performance core, Linux 7.1.3, with the
-examples built for the 6.9 profile:
+All numbers below come from two machines with the governor set to
+`performance`, each run pinned to one core. The first is an Intel i7-12700K on
+Linux 7.1.3, measured on a performance core at 4.9 GHz, with the examples built
+for the 6.9 profile:
 
 | Example | Native | In kernel | Ratio |
 |---|---:|---:|---:|
@@ -784,41 +792,54 @@ examples built for the 6.9 profile:
 | llama2.c, Q8 | 14.6 ms | 274.8 ms | **18.8×** |
 | llama2.c, FP32 | 7.5 ms | 471.2 ms | **62.9×** |
 
-The same set on an ARM64 laptop, one Cortex-A720 core at 2.6 GHz, Linux 7.0.12:
+The second is an ARM64 laptop on Linux 7.0.12, measured on one of its big
+Cortex-A720 cores at 2.6 GHz — the same idea as the Intel P-core, next to
+smaller Cortex-A520 cores that would give quite different numbers. There the
+examples are built for the 6.10 profile, the first one with an arena on arm64:
 
 | Example | Native | In kernel | Ratio |
 |---|---:|---:|---:|
-| DOOM, one frame | 0.225 ms | 0.906 ms | **4.0×** |
-| SQLite | 82.5 ms | 636.5 ms | **7.7×** |
-| Lua | 129.3 ms | 1098.0 ms | **8.5×** |
-| QuickJS | 222.0 ms | 2263.0 ms | **10.2×** |
-| llama2.c, Q8 | 23.1 ms | 535.2 ms | **23.1×** |
-| llama2.c, FP32 | 13.0 ms | 776.4 ms | **59.7×** |
+| DOOM, one frame | 0.227 ms | 0.913 ms | **4.0×** |
+| SQLite | 81.4 ms | 639.2 ms | **7.9×** |
+| Lua | 127.6 ms | 1090.4 ms | **8.5×** |
+| QuickJS | 224.0 ms | 2313.1 ms | **10.3×** |
+| CPython | 242.3 ms | 4487.9 ms | **18.5×** |
+| llama2.c, Q8 | 23.2 ms | 539.3 ms | **23.2×** |
+| llama2.c, FP32 | 13.0 ms | 775.2 ms | **59.6×** |
 
-Every row is a median of three runs pinned to one core, and every row is two
-commands away:
+Every row is a median of three runs. A package name without a suffix builds the
+example for the oldest supported kernel, so the profile is named explicitly
+here; the Lua row is two commands away, and the ARM64 table uses `-610`
+instead:
 
 ```console
-$ sudo taskset -c 0 nix run .#lua -- examples/lua/benchmark.lua
-$ taskset -c 0 nix run .#lua -- --native examples/lua/benchmark.lua
+$ sudo taskset -c 0 nix run .#lua-69 -- examples/lua/benchmark.lua
+$ taskset -c 0 nix run .#lua-69 -- --native examples/lua/benchmark.lua
 ```
 
 The shape of the table matters more than any single number. Integer and pointer
-code — DOOM, SQLite — runs a few times slower than native userspace.
-Interpreters land around an order of magnitude, because their own dispatch loop
-is exactly what becomes region dispatch. Floating point is the outlier:
-llama2.c's FP32 model is sixty times slower because the target has no FPU and
-every operation becomes a call into software floating point. Its Q8 model,
-which does the same work in integers, is three times faster than that.
+code — DOOM, SQLite — runs a few times slower than native userspace; the
+interpreter from the first attempt cost about sixty times native on exactly
+that kind of code. Interpreters land around an order of magnitude, because
+their own dispatch loop is exactly what becomes region dispatch. CPython sits
+at the far end of that group on both machines: it writes a reference count on
+every object it touches, allocates boxed integers, strings, and dictionaries
+constantly, and calls more helpers per bytecode than Lua does — memory traffic
+and calls across region boundaries are exactly what this machine charges for.
+Floating point is the outlier: llama2.c's FP32 model is sixty times slower
+because the target has no FPU and every operation becomes a call into software
+floating point. Its Q8 model does the same job in integers, and the penalty
+falls to nineteen times.
 
-Compatibility costs too. The plain `nix run .#lua` package is built for Linux
-5.15, where there is no arena and every memory access goes through a map
-accessor: the same benchmark then takes 983.6 ms on the Intel machine instead
-of 524.0, and DOOM's frame on the ARM64 laptop grows from 0.906 ms to 3.698 ms.
-Old kernels are supported, not free.
+Compatibility costs too. The same example without a suffix — `nix run .#lua` —
+is built for Linux 5.15, where there is no arena and every memory access goes
+through a map accessor: the benchmark then takes 983.6 ms on the Intel machine
+instead of 524.0, and DOOM's frame on the ARM64 laptop grows from 0.906 ms to
+3.698 ms. Old kernels are supported, not free.
 
-There is a less playful workload too. The ready-to-run
-[Lua-XDP example](https://github.com/ayles/bpf-capsule/tree/main/examples/lua-xdp)
+Every number so far comes from a program that runs to completion in its own
+time. A packet observer does not get that luxury. The ready-to-run [Lua-XDP
+example](https://github.com/ayles/bpf-capsule/tree/main/examples/lua-xdp)
 attaches Lua 5.5.1 to a real XDP hook, and its CPython twin does the same with
 an interpreter that has a standard library. A script supplied at startup sees
 every received packet and emits results through a ring buffer:
@@ -830,7 +851,9 @@ $ sudo nix run .#lua-xdp -- examples/lua-xdp/packet_observer.lua eth0
 The natural question is what that costs a real link. Both machines have a
 gigabit interface, so I measured a download with and without an observer
 attached and read the per-packet cost from the kernel's own counter for the XDP
-program:
+program. Packet processing runs where the interface's interrupt lands, so on
+both machines that interrupt is pinned to a performance core through
+`/proc/irq/N/smp_affinity_list`:
 
 | Observer | Intel, download | per packet | ARM64, download | per packet |
 |---|---:|---:|---:|---:|
@@ -840,15 +863,16 @@ program:
 
 Upload is untouched in every run: XDP sees only the receive side. What the
 script does dominates the cost. Both example observers format one line per
-packet and ship it to userspace; a script that parses the same headers and
+packet and ship it to userspace. A script that parses the same headers and
 returns silently costs 5.8 µs per packet in Lua and 25.1 µs in CPython on the
-ARM64 machine, and the Lua one leaves the gigabit almost intact at 964.6
-Mbit/s. The interpreter's floor is a few microseconds; everything above it is
-what the script was asked to do.
+ARM64 machine; the Lua one leaves the gigabit almost intact, at 964.6 Mbit/s.
+The interpreter's floor is a few microseconds; everything above it is what the
+script was asked to do.
 
-These ratios are hardware-specific, and the two machines above already differ
-by a factor of two on the same example. They show orders of magnitude, not a
-promise of identical results on another processor.
+None of this transfers between machines. The same Lua observer costs twice as
+much per packet on the ARM64 laptop as on the Intel one, even though their
+ratios against native code stay close. The tables show orders of magnitude, not
+a promise of identical results on another processor.
 
 ## LLVM and the verifier still do not agree
 
@@ -885,6 +909,8 @@ infrastructure, not maintaining a private LLVM pipeline forever.
 
 ## What Capsule does not do
 
+A few limits are worth stating plainly before anyone builds on this.
+
 - This is research software, not a security boundary: the verifier still
   guarantees that a program cannot crash the kernel, but Capsule does not
   protect one part of a program from another.
@@ -895,10 +921,12 @@ infrastructure, not maintaining a private LLVM pipeline forever.
   fibers, the size of the stack and heap, the budget of a single call.
 - The proofs the verifier accepts depend on LLVM and kernel versions. CI checks
   the supported profiles, but a new version of either may require changes.
-- The performance cost ranges from a few times to an order of magnitude
-  relative to native code; the section above has the details.
+- The performance cost runs from three times slower for integer and pointer
+  code, through an order of magnitude for interpreters, to sixty times for
+  software floating point. "The price of getting large code into the kernel"
+  has the numbers.
 
-## Conclusion: what the kernel ultimately sees
+## What the kernel ultimately sees
 
 At first I fought each constraint separately. Recursion became an array.
 Function pointers became chains of `if` statements. Wide calls became manual
@@ -914,29 +942,33 @@ operation a large piece of compiled code. A software stack restored calls and
 recursion. Fibers gave every computation separate state. A shared memory
 window replaced the attempt to preserve the biography of every C pointer.
 
-DOOM was the first large test of this design. Lua, QuickJS, SQLite, zlib,
-wasm3, llama2.c, `no_std` Rust, and CPython 3.14 now run on it as well. The
-Python example places the pure-Python standard library in Capsule memory and
-runs an unmodified interpreter with statically linked modules: compression
-codecs, `sqlite3`, XML, `decimal`, and hashing. A second example gives every
-fiber its own isolated interpreter and runs a Python packet observer straight
-from XDP.
+DOOM was the first large test of this design; the interpreters named at the top
+of the article followed it. CPython is the one worth naming twice: the example
+puts the pure-Python standard library in Capsule memory and runs an unmodified
+interpreter with statically linked modules — compression codecs, `sqlite3`,
+XML, `decimal`, and hashing. A second example gives every fiber its own
+isolated interpreter and lets a Python script watch packets at the XDP hook.
+
+None of that is free: the tables above put the price between three and sixty
+times native code, depending on what the program spends its time doing.
 
 This is not a list of things that once happened to run by hand. CI loads the
 tests and examples into every supported kernel profile, from Linux 5.15 to the
 newest packaged kernel. For llama2.c it runs the real stories260K checkpoint in
 FP32 and Q8, then requires the tokens to match a native run of the same code;
-generation itself uses an explicit finite continuation budget. For CPython it
-executes a script in the kernel that imports those modules, and then pushes
-live packets through the Python observer from two CPUs at once.
-
-LLM tools accelerated the work considerably; alongside my day job, I probably
-would not have brought the project this far without them.
+generation itself must finish without a single continuation, so a regression in
+the drive budget fails the check. For CPython it
+executes a script in the kernel that imports those modules, sends live packets
+through the Python observer, and then drives the same XDP program from two CPUs
+at once.
 
 One more port has already run end to end: the `scx_rustland` scheduler, moved
 into the kernel on Capsule, schedules real tasks with numbers comparable to its
 userspace original. A good scheduler on Capsule is a different project, and a
 different article.
+
+LLM tools sped the work up considerably. Alongside a day job, I probably would
+not have brought the project this far without them.
 
 The verifier never proves that DOOM terminates. It proves that the next region
 and the bounded dispatcher terminate. At runtime, Capsule assembles the
